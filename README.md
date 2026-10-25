@@ -44,6 +44,7 @@ degrade the UI instead of failing it.
                            ╭─ NOTES · 5 ────────────────────────────╮
                            │> 30 areas/area.linux.md     26m        │
                            ╰────────────────────────────────────────╯
+tab/h/l panes · ↑/↓ move · enter act · 1-9 project · s session · d note · r rescan · q quit
 ```
 
 Five focusable panes (tab walks them), titles sitting on the border,

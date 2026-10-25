@@ -142,6 +142,14 @@ func run(ctx context.Context, dir string, args ...string) (string, error) {
 		if msg == "" {
 			msg = err.Error()
 		}
+		// Git's advice ("To add an exception ... call: git config ...")
+		// rides in the same stderr, lines and all: a multi-line error in a
+		// one-line row or status inflates the frame past the window. The
+		// first sentence is the whole story ("fatal: detected dubious
+		// ownership in repository at ...").
+		if i := strings.IndexByte(msg, '\n'); i >= 0 {
+			msg = msg[:i]
+		}
 		return "", &gitError{dir: dir, msg: msg}
 	}
 	return strings.TrimSpace(stdout.String()), nil

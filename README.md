@@ -44,15 +44,23 @@ degrade the UI instead of failing it.
                            ╭─ NOTES · 5 ────────────────────────────╮
                            │> 30 areas/area.linux.md     26m        │
                            ╰────────────────────────────────────────╯
-tab/h/l panes · ↑/↓ move · enter act · 1-9 project · s session · d note · r rescan · q quit
+tab/h/l panes · ↑/↓ move · enter act · 1-9 project · s session · d note · ? help · r rescan · q quit
 ```
 
-Five focusable panes (tab walks them), titles sitting on the border,
-lazygit-style. OPEN IN is a one-line bar: the git-status row menu's keys,
-same letters same meaning, acting on the selected repository. Commits load
-on demand for that repo (`git log`, newest 15); sessions narrow to it
-(falling back to the project's list); notes are the project's freshest
-vault files. The cockpit's own keys ride the footer.
+Five focusable panes (tab, or a click, walks them), titles sitting on the
+border, lazygit-style. OPEN IN is a one-line bar: the git-status row
+menu's keys, same letters same meaning, acting on the selected repository.
+Commits load on demand for that repo (`git log`, newest 15); sessions
+narrow to it (falling back to the project's list); notes are the project's
+freshest vault files. The mouse works throughout: click focuses and
+selects, the wheel moves the hovered list. `?` opens the full help.
+
+Colours come from the active Omarchy theme
+(`~/.local/state/omarchy/current/theme/colors.toml`): the accent paints
+the active pane's border and the selected-row bar is the theme's own
+selection colour, so the cockpit reads as part of the desktop. The last
+project/repo pair is remembered (by path) under the XDG state dir, so
+`SUPER+M` reopens where you left off.
 
 ## Keys
 
@@ -77,7 +85,9 @@ Navigation (the footer bar):
 | `s` / `d`   | resume the marked session / open the marked note  |
 | `1`–`9`     | jump to project N                                 |
 | `r`         | rescan                                            |
+| `?`         | full help overlay                                 |
 | `q`         | quit                                              |
+| mouse       | click focuses + selects a row; wheel moves the hovered list |
 
 ## Install
 

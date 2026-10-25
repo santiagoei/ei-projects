@@ -42,7 +42,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "ei-projects:", err)
 		os.Exit(1)
 	}
-	p := tea.NewProgram(tui.New(cfg), tea.WithAltScreen())
+	p := tea.NewProgram(tui.New(cfg), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "ei-projects:", err)
 		os.Exit(1)

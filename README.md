@@ -9,30 +9,11 @@ the recent **opencode sessions** worked on in them, and the newest
 Built for Omarchy + Hyprland + foot; designed to be opened from a
 keybind into a floating, centered window (see the setup below).
 
-```
-ei-projects  4 projects
-
-▸ icampus.fei.org             6 repos · clean          ⧗ 1h        ✎ 5
-  omarchy                     6 repos · 1 pending      ⧗ now       ✎ 1
-  uh.humance.app              1 repos · 1 pending      ⧗ 2h        ✎ 5
-  obsidian                    1 repos · pending        ⧗ yesterday ✎ 5
-```
-
-Enter walks into a project:
-
-```
-omarchy  /mnt/files/projects/omarchy
-
-REPOSITORIES
-▸ ei-projects                 main        dirty 5
-  omarchy-git-status          main        clean
-
-SESSIONS (opencode)
-  [env] git-status - Menú por repo…        now  $0.40
-
-NOTES (vault)
-  tr.fei/backlog.2026.md                  2d
-```
+Four panes, lazygit-shaped: projects (top-left), the selected project's
+repositories (bottom-left), live shortcuts (top-right), and a tabbed
+context pane (bottom-right) with the repo's **commits**, its **opencode
+sessions**, and the project's freshest **vault notes**. The frame lives
+in `## Layout` below.
 
 ## What it reads
 
@@ -47,17 +28,37 @@ No API keys, no daemons, nothing written outside `~/.cache` (which it
 does not even use yet). Missing feeds (no sqlite3, no opencode, no vault)
 degrade the UI instead of failing it.
 
+## Layout (lazygit-shaped)
+
+```
+╭──────────────────────╮╭───────────────────────────────────────────╮
+│ PROJECTS · 4         ││ SHORTCUTS   (keys for the current focus)  │
+│ > 1 obsidian         │╰───────────────────────────────────────────╯
+│   2 omarchy  (1)     │╭───────────────────────────────────────────╮
+│   ...                ││ [COMMITS]· SESSIONS · NOTES  main @ repo  │
+╞══════════════════════╡│ > 97d5fe3 Move files        santiago · 10m│
+│ REPOSITORIES · proj  ││   82cde26 Audit +           santiago · 1h │
+│ > obsidian  dirty 2  │╰───────────────────────────────────────────╯
+╰──────────────────────╯
+```
+
+Commits load on demand for the selected repo (`git log`, newest 15);
+sessions narrow from the project list to the selected repo's directory.
+
 ## Keys
 
 | key         | action                                            |
 |-------------|---------------------------------------------------|
-| `↑/↓` `j/k` | move                                              |
-| `enter`     | project: act on the row (repo→lazygit, session→resume, note→open) |
-| `g` `t` `c` `a` `e` `y` | on a repo: lazygit / terminal / editor / agent / files / copy path |
-| `s`         | resume the selected opencode session               |
-| `d`         | open the selected note                             |
+| `tab` `l` `→` / `h` `←` | cycle focus: projects → repos → context    |
+| `[` / `]`   | context section: commits / sessions / notes       |
+| `↑/↓` `j/k` | move within the focused pane                      |
+| `enter`     | projects: to repos · repos: lazygit · context: act on the row |
+| `g` `t` `c` `a` `e` `y` | selected repo: lazygit / terminal / editor / agent / files / copy path |
+| `s`         | resume the selected session (terminal at its dir) |
+| `d`         | open the selected note                            |
+| `1`–`9`     | jump to project N                                 |
 | `r`         | rescan                                            |
-| `esc`       | back to the dashboard (`q` anywhere quits)         |
+| `esc` / `q` | one pane back / quit                              |
 
 ## Install
 

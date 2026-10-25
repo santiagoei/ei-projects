@@ -39,14 +39,14 @@ const scanTimeout = 20 * time.Second
 // something local that the remote does not have yet (uncommitted or
 // unpushed) -- the bar icon and this badge want the same answer.
 type Repo struct {
-	Path     string `json:"path"`
-	Branch   string `json:"branch"`
-	Dirty    bool   `json:"dirty"`
-	Changes  int    `json:"changes"` // porcelain lines, capped at countCap
+	Path    string `json:"path"`
+	Branch  string `json:"branch"`
+	Dirty   bool   `json:"dirty"`
+	Changes int    `json:"changes"` // porcelain lines, capped at countCap
 	Ahead   int    `json:"ahead"`
-	Behind   int    `json:"behind"`
-	Pending  bool   `json:"pending"`
-	Error    string `json:"error,omitempty"`
+	Behind  int    `json:"behind"`
+	Pending bool   `json:"pending"`
+	Error   string `json:"error,omitempty"`
 }
 
 // Discover returns the repository roots under root, sorted, within maxDepth
@@ -196,4 +196,42 @@ func counts(ctx context.Context, dir string) (behind, ahead int, err error) {
 	b, _ := strconv.Atoi(fields[0])
 	a, _ := strconv.Atoi(fields[1])
 	return b, a, nil
+}
+
+// Commit is one line of history, as the cockpit's COMMITS tab shows it.
+type Commit struct {
+	Hash    string    `json:"hash"`
+	Subject string    `json:"subject"`
+	Author  string    `json:"author"`
+	When    time.Time `json:"when"`
+}
+
+// Commits reads the newest limit entries of HEAD's log. It is on demand
+// (the TUI fetches it when a repo is selected) rather than part of the
+// scan report: history only matters for the one repo being looked at, and
+// fetching it per scan of per repo would multiply the work for nothing.
+func Commits(ctx context.Context, dir string, limit int) ([]Commit, error) {
+	if limit <= 0 {
+		limit = 15
+	}
+	out, err := run(ctx, dir, "log", "-n", strconv.Itoa(limit),
+		"--pretty=format:%h\x1f%s\x1f%an\x1f%at")
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil, nil
+	}
+	var commits []Commit
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Split(line, "\x1f")
+		if len(f) != 4 {
+			continue
+		}
+		at, _ := strconv.ParseInt(f[3], 10, 64)
+		commits = append(commits, Commit{
+			Hash: f[0], Subject: f[1], Author: f[2], When: time.Unix(at, 0),
+		})
+	}
+	return commits, nil
 }

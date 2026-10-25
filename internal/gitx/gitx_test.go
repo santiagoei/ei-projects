@@ -120,6 +120,35 @@ func TestStatusNotARepo(t *testing.T) {
 	}
 }
 
+func TestCommitsNewestFirstWithMeta(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "repo")
+	newRepo(t, dir) // one commit "c1"
+	if err := os.WriteFile(filepath.Join(dir, "g"), []byte("2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "add", ".")
+	git(t, dir, "commit", "-q", "-m", "second one")
+
+	got, err := Commits(context.Background(), dir, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 commits: %+v", got)
+	}
+	if got[0].Subject != "second one" || got[1].Subject != "c1" {
+		t.Fatalf("newest first: %+v", got)
+	}
+	if got[0].Hash == "" || got[0].Author != "t" || got[0].When.IsZero() {
+		t.Fatalf("metadata missing: %+v", got[0])
+	}
+
+	limited, err := Commits(context.Background(), dir, 1)
+	if err != nil || len(limited) != 1 || limited[0].Subject != "second one" {
+		t.Fatalf("limit: %+v err=%v", limited, err)
+	}
+}
+
 func TestScanKeepsOrderAndParallelism(t *testing.T) {
 	root := t.TempDir()
 	var dirs []string

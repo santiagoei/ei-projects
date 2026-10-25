@@ -19,16 +19,16 @@ import (
 )
 
 type Project struct {
-	Name       string           `json:"name"`
-	Path       string           `json:"path"`
-	Missing    bool             `json:"missing"`
-	Repos      []gitx.Repo      `json:"repos"`
-	RepoCount  int              `json:"repoCount"`
-	Pending    int              `json:"pending"`
-	DocsFolder string           `json:"docsFolder,omitempty"`
-	Notes      []vault.Note     `json:"notes"`
-	Sessions   []agent.Session  `json:"sessions"`
-	FeedErrors []string         `json:"feedErrors,omitempty"`
+	Name       string          `json:"name"`
+	Path       string          `json:"path"`
+	Missing    bool            `json:"missing"`
+	Repos      []gitx.Repo     `json:"repos"`
+	RepoCount  int             `json:"repoCount"`
+	Pending    int             `json:"pending"`
+	DocsFolder string          `json:"docsFolder,omitempty"`
+	Notes      []vault.Note    `json:"notes"`
+	Sessions   []agent.Session `json:"sessions"`
+	FeedErrors []string        `json:"feedErrors,omitempty"`
 }
 
 type Report struct {

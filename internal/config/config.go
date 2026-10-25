@@ -19,7 +19,7 @@ import (
 const (
 	DefaultMaxDepth     = 4
 	DefaultNotesLimit   = 5
-	DefaultSessionLimit = 10
+	DefaultSessionLimit = 20 // per project; the TUI narrows it to the repo
 	defaultWidgetID     = "ei.git-status"
 )
 
@@ -58,12 +58,12 @@ func Load() (*Config, error) {
 	ownPath := filepath.Join(home, ".config", "ei-projects", "config.json")
 	if data, err := os.ReadFile(ownPath); err == nil {
 		var own struct {
-			WatchDirs    *[]string         `json:"watchDirs"`
-			VaultDir     *string           `json:"vault"`
+			WatchDirs    *[]string          `json:"watchDirs"`
+			VaultDir     *string            `json:"vault"`
 			DocsMap      *map[string]string `json:"docsMap"`
-			MaxDepth     *int              `json:"maxDepth"`
-			NotesLimit   *int              `json:"notesLimit"`
-			SessionLimit *int              `json:"sessionLimit"`
+			MaxDepth     *int               `json:"maxDepth"`
+			NotesLimit   *int               `json:"notesLimit"`
+			SessionLimit *int               `json:"sessionLimit"`
 		}
 		if err := json.Unmarshal(data, &own); err != nil {
 			return nil, fmt.Errorf("%s: %w", ownPath, err)

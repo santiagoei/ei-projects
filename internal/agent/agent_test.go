@@ -144,3 +144,43 @@ func TestPrefersSessionV2(t *testing.T) {
 		t.Fatalf("must read session_v2 only: %+v", got)
 	}
 }
+
+func TestOpenTodos(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("no sqlite3")
+	}
+	db := filepath.Join(t.TempDir(), "opencode.db")
+	stmt := "CREATE TABLE todo(session_id TEXT, content TEXT, status TEXT, priority TEXT, position INTEGER, time_created INTEGER, time_updated INTEGER);" +
+		"INSERT INTO todo VALUES('s1','finish migration','pending','high',2,100,100);" +
+		"INSERT INTO todo VALUES('s1','write tests','in_progress','medium',1,90,90);" +
+		"INSERT INTO todo VALUES('s1','deploy','completed','low',0,80,80);" +
+		"INSERT INTO todo VALUES('s1','someday','cancelled','low',3,70,70);" +
+		"INSERT INTO todo VALUES('s2','other session todo','pending','medium',0,1,1);"
+	if out, err := exec.Command("sqlite3", db, stmt).CombinedOutput(); err != nil {
+		t.Fatalf("seed: %v\n%s", err, out)
+	}
+	t.Setenv("EI_PROJECTS_OPENCODE_DB", db)
+
+	got, err := OpenTodos("s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 { // completed and cancelled excluded
+		t.Fatalf("open todos only: %+v", got)
+	}
+	if got[0].Content != "write tests" || got[1].Content != "finish migration" {
+		t.Fatalf("position order: %+v", got)
+	}
+	// A session with no list at all, and a missing table, are both silent.
+	if got, err := OpenTodos("nobody"); err != nil || len(got) != 0 {
+		t.Fatalf("empty session: %+v %v", got, err)
+	}
+	noTodos := filepath.Join(t.TempDir(), "plain.db")
+	if _, err := exec.Command("sqlite3", noTodos, "CREATE TABLE session(id TEXT);").CombinedOutput(); err != nil {
+		t.Skip("sqlite3 seed failed")
+	}
+	t.Setenv("EI_PROJECTS_OPENCODE_DB", noTodos)
+	if got, err := OpenTodos("s1"); err != nil || len(got) != 0 {
+		t.Fatalf("missing todo table must degrade quietly: %+v %v", got, err)
+	}
+}

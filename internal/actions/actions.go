@@ -38,6 +38,15 @@ func Explore(dir string) error {
 	return start("uwsm-app", "--", "xdg-open", dir)
 }
 
+// Compose opens a terminal already cd'd into the environment and runs the
+// given `docker compose` arguments there: up/down build and pull can take
+// minutes, and the user watching them happen is the point, not an optimisation.
+func Compose(dir, file string, args ...string) error {
+	full := append([]string{"--", "xdg-terminal-exec", "--dir=" + dir,
+		"-e", "docker", "compose", "-f", file}, args...)
+	return start("uwsm-app", full...)
+}
+
 func OpenFile(path string) error {
 	return start("uwsm-app", "--", "xdg-open", path)
 }

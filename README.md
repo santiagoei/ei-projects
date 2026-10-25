@@ -9,8 +9,9 @@ the recent **opencode sessions** worked on in them, and the newest
 Built for Omarchy + Hyprland + foot; designed to be opened from a
 keybind into a floating, centered window (see the setup below).
 
-Five focusable panes, lazygit-shaped: projects (top-left), the selected
-project's repositories (bottom-left), a one-line **OPEN IN** launcher bar
+Six focusable panes, lazygit-shaped (the sixth appearing only for projects
+with a docker environment): projects (top-left), the selected project's
+repositories (bottom-left), a one-line **OPEN IN** launcher bar
 for the selected repo (top-right), and beneath it three stacked list
 panes: the repo's **commits**, its **opencode sessions**, and the
 project's freshest **vault notes**. The frame lives in `## Layout` below.
@@ -22,6 +23,8 @@ project's freshest **vault notes**. The frame lives in `## Layout` below.
 | Projects | the `watchDirs` of the `ei.git-status` widget in `~/.config/omarchy/shell.json` | a read of your existing config |
 | Repos    | `git status` etc., parallel, same flags as the panel's scanner (`--no-optional-locks`, fsmonitor off) | ~0.2 s for 15 repos on ntfs |
 | Sessions | `~/.local/share/opencode/opencode.db` via `sqlite3 -readonly` — prefers `session_v2`, falls back to `session`, guards required columns | one subprocess |
+| Todos    | the same db's `todo` table, for the session under the cursor: its open items (`pending`/`in_progress`) appear in the status line | one subprocess per selection |
+| Envs     | a `docker-compose.yml`/`compose.yaml` auto-detected at the project root (or any repo root); state via `docker compose ps --format json` | four stats + one subprocess |
 | Notes    | the vault on disk, `.md` files by mtime, matched per project by name tokens or `docsMap` | a walk |
 
 No API keys, no daemons, nothing written outside `~/.cache` (which it
@@ -47,13 +50,16 @@ degrade the UI instead of failing it.
 tab/h/l panes · ↑/↓ move · enter act · 1-9 project · s session · d note · ? help · r rescan · q quit
 ```
 
-Five focusable panes (tab, or a click, walks them), titles sitting on the
+Six focusable panes — projects, repos, the conditional **ENV** (shown
+only while the selected project has a docker environment), commits,
+sessions, notes — tab, or a click, walks them, titles sitting on the
 border, lazygit-style. OPEN IN is a one-line bar: the git-status row
 menu's keys, same letters same meaning, acting on the selected repository.
 Commits load on demand for that repo (`git log`, newest 15); sessions
-narrow to it (falling back to the project's list); notes are the project's
-freshest vault files. The mouse works throughout: click focuses and
-selects, the wheel moves the hovered list. `?` opens the full help.
+narrow to it (falling back to the project's list) and carry their open
+todos into the status line; notes are the project's freshest vault files.
+The mouse works throughout: click focuses and selects, the wheel moves
+the hovered list. `?` opens the full help.
 
 Colours come from the active Omarchy theme
 (`~/.local/state/omarchy/current/theme/colors.toml`): the accent paints
@@ -79,7 +85,7 @@ Navigation (the footer bar):
 
 | key         | action                                            |
 |-------------|---------------------------------------------------|
-| `tab` `l` `→` / `h` `←` `esc` | cycle the five panes: projects → repos → commits → sessions → notes (`esc` at projects quits) |
+| `tab` `l` `→` / `h` `←` `esc` | cycle the panes: projects → repos → (env) → commits → sessions → notes (`esc` at projects quits) |
 | `↑/↓` `j/k` | move within the focused pane                      |
 | `enter`     | projects: to repos · repos: lazygit · commits: copy sha · sessions: resume · notes: open |
 | `s` / `d`   | resume the marked session / open the marked note  |
@@ -88,6 +94,17 @@ Navigation (the footer bar):
 | `?`         | full help overlay                                 |
 | `q`         | quit                                              |
 | mouse       | click focuses + selects a row; wheel moves the hovered list |
+
+ENV pane keys (only while it is focused — there they beat the global
+meanings: `r` restarts, it does not rescan; `d` scales down):
+
+| key   | action (opens a terminal, on the selected service)   |
+|-------|------------------------------------------------------|
+| `u`   | `docker compose up -d`                               |
+| `d`   | `docker compose down`                                |
+| `r`   | restart                                              |
+| `l`   | logs (follow)                                        |
+| `x`   | shell (`exec … sh`)                                  |
 
 ## Install
 

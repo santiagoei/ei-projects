@@ -24,6 +24,7 @@ import (
 	"github.com/santiagoei/ei-projects/internal/actions"
 	"github.com/santiagoei/ei-projects/internal/agent"
 	"github.com/santiagoei/ei-projects/internal/config"
+	"github.com/santiagoei/ei-projects/internal/env"
 	"github.com/santiagoei/ei-projects/internal/gitx"
 	"github.com/santiagoei/ei-projects/internal/scan"
 )
@@ -37,6 +38,7 @@ type paneFocus int
 const (
 	paneProjects paneFocus = iota
 	paneRepos
+	paneEnv
 	paneCommits
 	paneSessions
 	paneNotes
@@ -56,6 +58,19 @@ type commitsDoneMsg struct {
 	err      error
 }
 
+// todosDoneMsg / envDoneMsg race-guard the same way: each carries the
+// identity (session id / compose file) the request was made for.
+type todosDoneMsg struct {
+	sessionID string
+	todos     []agent.Todo
+}
+
+type envDoneMsg struct {
+	file     string
+	services []env.Service
+	err      error
+}
+
 type Model struct {
 	cfg     *config.Config
 	report  scan.Report
@@ -69,6 +84,13 @@ type Model struct {
 	commits        []gitx.Commit
 	commitsFor     string
 	commitsLoading bool
+	todos          []agent.Todo
+	todosFor       string
+	envSvcs        []env.Service
+	envFor         string
+	envFetched     bool
+	envLoading     bool
+	envErr         string
 	spinner        spinner.Model
 	help           bool
 	restored       bool
@@ -119,6 +141,93 @@ func (m *Model) commitsCmd() tea.Cmd {
 	}
 }
 
+// todosCmd fetches the open todos of the session the cursor rests on:
+// "what was left hanging in here", shown in the status line.
+func (m *Model) todosCmd() tea.Cmd {
+	id := m.selectedSessionID()
+	if id == "" {
+		m.todos, m.todosFor = nil, ""
+		return nil
+	}
+	if m.todosFor == id {
+		return nil
+	}
+	m.todosFor = id
+	return func() tea.Msg {
+		td, err := agent.OpenTodos(id)
+		if err != nil {
+			return todosDoneMsg{sessionID: id}
+		}
+		return todosDoneMsg{sessionID: id, todos: td}
+	}
+}
+
+func (m Model) selectedSessionID() string {
+	list := m.sessionsFor()
+	i := m.cursors[paneSessions]
+	if i < 0 || i >= len(list) {
+		return ""
+	}
+	return list[i].ID
+}
+
+// envCmd refreshes the compose service state of the selected project.
+func (m *Model) envCmd() tea.Cmd {
+	p := m.proj()
+	if p.EnvFile == "" {
+		m.envSvcs, m.envFor, m.envErr, m.envLoading, m.envFetched = nil, "", "", false, false
+		return nil
+	}
+	if m.envFor == p.EnvFile && (m.envFetched || m.envLoading) {
+		return nil // cached for this file (or a request already in flight)
+	}
+	if !env.Available() {
+		m.envFor, m.envFetched, m.envErr = p.EnvFile, true, "docker CLI not installed"
+		return nil
+	}
+	path := p.EnvFile
+	m.envFor, m.envFetched, m.envLoading, m.envErr = path, false, true, ""
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), env.StatusTimeout+2*time.Second)
+		defer cancel()
+		svcs, err := env.Status(ctx, path)
+		return envDoneMsg{file: path, services: svcs, err: err}
+	}
+}
+
+// focusOrder is the tab order, which only includes the ENV pane while the
+// selected project actually has one AND the layout can afford to show it
+// (geom drops the optional pane on very short windows; focus must not be
+// allowed to walk into a pane that is not painted).
+func (m Model) focusOrder() []paneFocus {
+	order := []paneFocus{paneProjects, paneRepos, paneCommits, paneSessions, paneNotes}
+	if m.geom().hasEnv {
+		order = append(order[:2], append([]paneFocus{paneEnv}, order[2:]...)...)
+	}
+	return order
+}
+
+// cycleFocus moves through the order with wraparound; a focus the order no
+// longer contains (the ENV pane vanished with the last project) parks at
+// projects instead of falling off the list.
+func (m *Model) cycleFocus(step int) {
+	m.status = "" // transient feedback belongs to the moment it was made;
+	// leaving it up would hide the session todos behind the status
+	order := m.focusOrder()
+	pos := -1
+	for i, p := range order {
+		if p == m.focus {
+			pos = i
+		}
+	}
+	if pos < 0 {
+		m.focus = order[0]
+		return
+	}
+	n := len(order)
+	m.focus = order[((pos+step)%n+n)%n]
+}
+
 // -------------------------------------------------------------- selection
 
 func (m Model) proj() scan.Project {
@@ -166,6 +275,8 @@ func (m Model) listCount(p paneFocus) int {
 		return len(m.report.Projects)
 	case paneRepos:
 		return len(m.proj().Repos)
+	case paneEnv:
+		return len(m.envSvcs)
 	case paneCommits:
 		return len(m.commits)
 	case paneSessions:
@@ -207,10 +318,12 @@ func (m *Model) selectProject(i int) {
 }
 
 // commitSelection persists the project/repo pair by path (not index: the
-// watched list can grow between sessions) and refreshes the history pane.
+// watched list can grow between sessions) and refreshes every feed that
+// hangs off the selection: history, the selected session's todos, the
+// compose state.
 func (m *Model) commitSelection() tea.Cmd {
 	m.persistSelection()
-	return m.commitsCmd()
+	return tea.Batch(m.commitsCmd(), m.todosCmd(), m.envCmd())
 }
 
 // -------------------------------------------------------------- update
@@ -254,7 +367,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for p := range paneCount {
 			m.cursors[paneFocus(p)] = clamp(m.cursors[paneFocus(p)], 0, m.listCount(paneFocus(p))-1)
 		}
-		return m, m.commitsCmd()
+		return m, tea.Batch(m.commitsCmd(), m.todosCmd(), m.envCmd())
 
 	case commitsDoneMsg:
 		if repo, ok := m.selectedRepo(); ok && repo.Path == msg.repoPath {
@@ -266,6 +379,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.commitsLoading = false
 		m.cursors[paneCommits] = clamp(m.cursors[paneCommits], 0, len(m.commits)-1)
+		return m, m.tickIfBusy()
+
+	case todosDoneMsg:
+		if m.selectedSessionID() != msg.sessionID {
+			return m, nil // the cursor moved on; this answer is already stale
+		}
+		m.todos = msg.todos
+		return m, nil
+
+	case envDoneMsg:
+		m.envLoading = false
+		if m.proj().EnvFile != msg.file {
+			return m, m.tickIfBusy()
+		}
+		m.envSvcs = msg.services
+		m.envFetched = true
+		m.envErr = ""
+		if msg.err != nil {
+			m.envErr = firstLine(msg.err.Error())
+		}
+		m.cursors[paneEnv] = clamp(m.cursors[paneEnv], 0, len(m.envSvcs)-1)
 		return m, m.tickIfBusy()
 
 	case spinner.TickMsg:
@@ -306,22 +440,38 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.help = true
 		return m, nil
-	case "r":
-		m.loading = true
-		return m, tea.Batch(m.scanCmd(), m.spinner.Tick)
-	case "tab", "l", "right":
-		m.focus = (m.focus + 1) % paneCount
+	case "tab", "right":
+		m.cycleFocus(1)
+		return m, nil
+	case "l":
+		if m.focus == paneEnv {
+			break // over there, l is compose logs
+		}
+		m.cycleFocus(1)
 		return m, nil
 	case "shift+tab", "h", "left", "esc":
-		if m.focus == paneProjects {
-			if key == "esc" {
-				return m, tea.Quit
-			}
-			m.focus = paneNotes
-		} else {
-			m.focus--
+		if m.focus == paneProjects && key == "esc" {
+			return m, tea.Quit
 		}
+		m.cycleFocus(-1)
 		return m, nil
+	}
+
+	// While the ENV pane is focused its compose verbs win over the global
+	// keys they would otherwise steal: r restarts instead of rescanning,
+	// d brings services down instead of opening a note.
+	if m.focus == paneEnv {
+		if handled := m.envAction(key); handled {
+			return m, nil
+		}
+	}
+
+	switch key {
+	case "r":
+		m.loading = true
+		// force every on-demand feed to refetch after the rescan
+		m.commitsFor, m.todosFor, m.envFetched = "", "", false
+		return m, tea.Batch(m.scanCmd(), m.spinner.Tick)
 	}
 
 	// Project jump digits: global, like lazygit's global keys.
@@ -359,6 +509,47 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// envAction maps the ENV pane's keys onto `docker compose`, always shown
+// in a terminal so builds, pulls and logs are watched rather than awaited.
+func (m *Model) envAction(key string) bool {
+	p := m.proj()
+	if p.EnvFile == "" {
+		return false
+	}
+	svc := ""
+	if i := m.cursors[paneEnv]; i >= 0 && i < len(m.envSvcs) {
+		svc = m.envSvcs[i].Name
+	}
+	var args []string
+	switch key {
+	case "u":
+		args = []string{"up", "-d"}
+	case "d":
+		args = []string{"down"}
+	case "r":
+		if svc == "" {
+			m.status = "restart: no service selected"
+			return true
+		}
+		args = []string{"restart", svc}
+	case "l":
+		args = []string{"logs", "-f"}
+		if svc != "" {
+			args = append(args, svc)
+		}
+	case "x":
+		if svc == "" {
+			m.status = "shell: no service selected"
+			return true
+		}
+		args = []string{"exec", svc, "sh"}
+	default:
+		return false
+	}
+	m.reported(actions.Compose(p.EnvDir, p.EnvFile, args...), "compose", strings.Join(args, " "))
+	return true
+}
+
 func (m Model) repoAction(key string) (func(string) error, bool) {
 	switch key {
 	case "g":
@@ -393,6 +584,9 @@ func (m Model) moveCursor(dy int) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.cursors[m.focus] = clamp(m.cursors[m.focus]+dy, 0, n-1)
+		if m.focus == paneSessions {
+			return m, m.todosCmd()
+		}
 	}
 	return m, nil
 }
@@ -445,6 +639,9 @@ func (m Model) onMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m, m.commitSelection()
 			default:
 				m.cursors[pane] = idx
+				if pane == paneSessions {
+					return m, m.todosCmd()
+				}
 			}
 		} else {
 			n := m.listCount(pane)
@@ -460,6 +657,9 @@ func (m Model) onMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m, m.commitSelection()
 			default:
 				m.cursors[pane] = clamp(m.selectedIndex(pane)+step, 0, n-1)
+				if pane == paneSessions {
+					return m, m.todosCmd()
+				}
 			}
 		}
 		return m, nil
@@ -475,6 +675,9 @@ func (m Model) onEnter() (tea.Model, tea.Cmd) {
 		if repo, ok := m.selectedRepo(); ok {
 			m.reported(actions.Lazygit(repo.Path), "lazygit", repo.Path)
 		}
+	case paneEnv:
+		// inert on purpose: compose verbs need a deliberate letter, and
+		// an accidental enter should never spin up (or down) a server
 	case paneCommits:
 		return m.actCopy()
 	case paneSessions:
@@ -515,6 +718,8 @@ func (m Model) actCopy() (tea.Model, tea.Cmd) {
 		if repo, ok := m.selectedRepo(); ok {
 			what = repo.Path
 		}
+	case paneEnv:
+		what = m.proj().EnvFile
 	case paneCommits:
 		i := m.cursors[paneCommits]
 		if i >= 0 && i < len(m.commits) {
@@ -609,9 +814,15 @@ func (m Model) View() string {
 	sessions := m.paneSessions(g)
 	notes := m.paneNotes(g)
 
+	right := []string{openIn}
+	if g.hasEnv {
+		right = append(right, m.paneEnv(g))
+	}
+	right = append(right, commits, sessions, notes)
+
 	left := lipgloss.JoinVertical(lipgloss.Left, projects, repos)
-	right := lipgloss.JoinVertical(lipgloss.Left, openIn, commits, sessions, notes)
-	frame := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+	frame := lipgloss.JoinHorizontal(lipgloss.Top, left,
+		lipgloss.JoinVertical(lipgloss.Left, right...))
 
 	status := m.statusLine()
 	legend := m.legend()
@@ -834,6 +1045,54 @@ func defaultAgent() string {
 	return agentCache
 }
 
+// paneEnv lists the selected project's compose services with their state;
+// the whole project's environment is at a glance and a keystroke away.
+func (m Model) paneEnv(g geom) string {
+	w, h := g.rightW, g.envH
+	p := m.proj()
+	title := "ENV · " + filepath.Base(p.EnvDir)
+	up := 0
+	for _, s := range m.envSvcs {
+		if s.State == "running" {
+			up++
+		}
+	}
+	if len(m.envSvcs) > 0 {
+		title += fmt.Sprintf(" · %d/%d up", up, len(m.envSvcs))
+	}
+	inner := w - 4
+	var lines []string
+	switch {
+	case m.envLoading:
+		lines = []string{m.spinner.View() + dim(" docker compose ps…")}
+	case m.envErr != "":
+		lines = []string{red("✗ ") + dim(clip(m.envErr, inner-2))}
+	case len(m.envSvcs) == 0:
+		lines = []string{dim("(no containers — compose down?)")}
+	default:
+		for i, s := range m.envSvcs {
+			state := orange(s.State)
+			switch s.State {
+			case "running":
+				state = green("▲ running")
+			case "exited", "dead":
+				state = red("● " + s.State)
+			}
+			switch s.Health {
+			case "healthy":
+				state += green(" ✓")
+			case "unhealthy":
+				state += red(" unhealthy")
+			}
+			nameW := max(1, min(inner-16, 24))
+			line := padR(clip(s.Name, nameW), nameW) + state
+			lines = append(lines, m.fillRow(paneEnv, "> "+line, i == m.cursors[paneEnv], inner))
+		}
+	}
+	return pane(m.focus == paneEnv, clip(title, w-6), w, h,
+		listWindow(lines, m.cursors[paneEnv], h-2))
+}
+
 func (m Model) paneCommits(g geom) string {
 	w, h := g.rightW, g.commitsH
 	inner := w - 4
@@ -918,6 +1177,10 @@ func (m Model) helpView() string {
 		accent("context panes"),
 		"  " + keyStyle("s") + " " + dim("resume session    ") + keyStyle("d") + dim(" open note    ") +
 			keyStyle("enter") + dim(" commits: copy sha · sessions: resume · notes: open"),
+		accent("env · docker compose"),
+		"  " + keyStyle("u") + dim(" up    ") + keyStyle("d") + dim(" down    ") +
+			keyStyle("r") + dim(" restart    ") + keyStyle("l") + dim(" logs    ") +
+			keyStyle("x") + dim(" shell — in a terminal, on the selected service"),
 		accent("app"),
 		"  " + keyStyle("r") + dim(" rescan    ") + keyStyle("?") + dim(" this help    ") + keyStyle("q") + dim(" quit"),
 	}
@@ -930,14 +1193,21 @@ func (m Model) helpView() string {
 		pane(true, "HELP", innerW+2, h, body))
 }
 
+// statusLine carries, in order of urgency: the last action, the open
+// todos of the session under the cursor (while the SESSIONS pane is
+// focused -- "what was left hanging in here"), or the project path.
 func (m Model) statusLine() string {
-	left := m.status
-	if left == "" {
-		left = shortPath(m.proj().Path)
+	var left string
+	switch {
+	case m.status != "":
+		left = dim(clip(strings.ReplaceAll(m.status, "\n", " "), m.width/2))
+	case m.focus == paneSessions && len(m.todos) > 0:
+		left = m.todosLine()
+	default:
+		left = dim(clip(shortPath(m.proj().Path), m.width/2))
 	}
-	left = dim(clip(strings.ReplaceAll(left, "\n", " "), m.width/2))
 	right := ""
-	if m.loading || m.commitsLoading {
+	if m.loading || m.commitsLoading || m.envLoading {
 		right = m.spinner.View()
 	} else if !m.scannedAt.IsZero() {
 		age := shortAge(m.scannedAt)
@@ -952,6 +1222,36 @@ func (m Model) statusLine() string {
 		pad = 1
 	}
 	return left + strings.Repeat(" ", pad) + right
+}
+
+// todosLine renders "N open: a · b · c" for the selected session: each
+// item is clipped while still plain text (never inside an escape
+// sequence) and items are added only while they fit the status budget.
+func (m Model) todosLine() string {
+	head := orange(fmt.Sprintf("%d open:", len(m.todos)))
+	budget := m.width/2 - lipgloss.Width(head) - 1
+	var parts []string
+	used := 0
+	for i, t := range m.todos {
+		if i == 3 {
+			parts = append(parts, dim("…"))
+			break
+		}
+		it := clip(t.Content, 40)
+		w := lipgloss.Width(it) + 3 // item + " · "
+		if used+w > budget {
+			if len(parts) > 0 {
+				parts = append(parts, dim("…"))
+			}
+			break
+		}
+		parts = append(parts, dim(it))
+		used += w
+	}
+	if len(parts) == 0 {
+		parts = []string{dim(clip(m.todos[0].Content, max(1, budget-2)))}
+	}
+	return head + " " + strings.Join(parts, " · ")
 }
 
 // listWindow shows items around the selected index, clipping to innerH rows.

@@ -161,3 +161,68 @@ func TestSelectionPersistsByPath(t *testing.T) {
 		t.Fatalf("restore: project=%d repo=%d", fresh.project, fresh.repo)
 	}
 }
+
+// With a compose environment on the selected project, the ENV pane joins
+// the tab order, the layout, and the click map; without one it is absent.
+func TestEnvPaneLifecycle(t *testing.T) {
+	rep := testReport() // icampus (index 1) gains the env below
+	rep.Projects[1].EnvDir = "/p/icampus.fei.org"
+	rep.Projects[1].EnvFile = "/p/icampus.fei.org/docker-compose.yml"
+
+	m := New(&config.Config{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	if m.geom().hasEnv {
+		t.Fatal("env pane before any scan")
+	}
+
+	m = drive(t, m, scanDoneMsg{report: rep})
+	m.selectProject(1) // the project with the compose file
+	if !m.geom().hasEnv {
+		t.Fatalf("env pane missing for %+v", m.proj())
+	}
+	order := m.focusOrder()
+	if len(order) != 6 || order[2] != paneEnv {
+		t.Fatalf("focus order: %v", order)
+	}
+	m = drive(t, m, tea.KeyMsg{Type: tea.KeyTab}, tea.KeyMsg{Type: tea.KeyTab}) // repos -> env
+	if m.focus != paneEnv {
+		t.Fatalf("tab into env: %d", m.focus)
+	}
+	// 'r' over the ENV pane means restart, not rescan: with no service
+	// selected yet it reports instead of firing the rescan path.
+	m = drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if m.loading || m.status == "" {
+		t.Fatalf("r should be the env's restart, not a rescan: %+v", m)
+	}
+	// and the frame still fits
+	if n := strings.Count(m.View(), "\n") + 1; n > 39 {
+		t.Fatalf("env view too tall: %d", n)
+	}
+}
+
+// Open todos of the selected session appear in the status line while the
+// SESSIONS pane holds focus.
+func TestTodosInStatusLine(t *testing.T) {
+	m := New(&config.Config{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: testReport()})
+	m.focus = paneSessions
+	m.cursors[paneSessions] = 0
+	id := m.selectedSessionID()
+	if id == "" {
+		t.Skip("fixture has no selected session")
+	}
+	m = drive(t, m, todosDoneMsg{sessionID: id, todos: []agent.Todo{
+		{Content: "deploy hotfix", Status: "pending"},
+		{Content: "write report", Status: "in_progress"},
+	}})
+	view := m.View()
+	if !strings.Contains(view, "2 open:") || !strings.Contains(view, "deploy hotfix") {
+		t.Fatalf("todos missing from status:\n%s", view[strings.LastIndex(view, "\n")-200:])
+	}
+	// a stale answer (cursor moved on) is dropped
+	m = drive(t, m, todosDoneMsg{sessionID: "ses_gone", todos: []agent.Todo{{Content: "ghost"}}})
+	if strings.Contains(m.View(), "ghost") {
+		t.Fatal("stale todos reply was rendered")
+	}
+}

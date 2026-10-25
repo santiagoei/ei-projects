@@ -43,6 +43,10 @@ func TestRunEndToEnd(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(watch, "file"), []byte("y"), 0o644); err != nil {
 		t.Fatal(err)
 	} // now dirty
+	// a compose environment at the project root must be auto-detected
+	if err := os.WriteFile(filepath.Join(watch, "docker-compose.yml"), []byte("services: {}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	vaultRoot := filepath.Join(home, "obsidian")
 	if err := os.MkdirAll(filepath.Join(vaultRoot, "Clientes", "icampus"), 0o755); err != nil {
@@ -99,6 +103,10 @@ func TestRunEndToEnd(t *testing.T) {
 	}
 	if p.DocsFolder == "" || len(p.Notes) != 1 || p.Notes[0].Rel != filepath.Join("Sprint.md") {
 		t.Fatalf("vault feed: %+v", *p)
+	}
+	if filepath.Base(p.EnvFile) != "docker-compose.yml" ||
+		p.EnvFile != filepath.Join(p.Path, "docker-compose.yml") {
+		t.Fatalf("env feed: %+v", *p)
 	}
 	if _, err := exec.LookPath("sqlite3"); err == nil && len(p.Sessions) != 1 {
 		t.Fatalf("sessions feed: %+v", *p)

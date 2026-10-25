@@ -163,3 +163,48 @@ func columns(db, table string) (map[string]bool, error) {
 	}
 	return have, nil
 }
+
+// Todo is one work item an opencode session left behind.
+type Todo struct {
+	Content string `json:"content"`
+	Status  string `json:"status"` // pending | in_progress
+}
+
+// OpenTodos lists the unfinished todos (pending / in_progress) of one
+// session: "what was left hanging in here". The todo table only exists
+// once a session has made a list, so a missing one means "no open todos",
+// not an error; every other feed failure is the caller's to swallow, the
+// detail line is decoration and must never break the cockpit.
+func OpenTodos(sessionID string) ([]Todo, error) {
+	db := DBPath()
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		return nil, ErrNoBinary
+	}
+	if fi, err := os.Stat(db); err != nil || fi.Size() == 0 {
+		return nil, ErrNoDatabase
+	}
+	have, err := columns(db, "todo")
+	if err != nil || !have["content"] || !have["status"] {
+		return nil, nil // no todo table (or none of the columns): no todos
+	}
+	esc := strings.ReplaceAll(sessionID, "'", "''")
+	q := fmt.Sprintf(
+		"SELECT content, status FROM todo "+
+			"WHERE session_id = '%s' AND status IN ('pending','in_progress') "+
+			"ORDER BY position, time_created;", esc)
+	out, err := exec.Command("sqlite3", "-readonly", "-json", db, q).Output()
+	if err != nil {
+		return nil, fmt.Errorf("todo query: %w", err)
+	}
+	if strings.TrimSpace(string(out)) == "" {
+		return nil, nil
+	}
+	var rows []Todo
+	if err := json.Unmarshal(out, &rows); err != nil {
+		return nil, fmt.Errorf("todo rows: %w", err)
+	}
+	for i := range rows {
+		rows[i].Content = strings.Join(strings.Fields(rows[i].Content), " ")
+	}
+	return rows, nil
+}

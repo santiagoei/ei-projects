@@ -14,6 +14,7 @@ import (
 
 	"github.com/santiagoei/ei-projects/internal/agent"
 	"github.com/santiagoei/ei-projects/internal/config"
+	"github.com/santiagoei/ei-projects/internal/env"
 	"github.com/santiagoei/ei-projects/internal/gitx"
 	"github.com/santiagoei/ei-projects/internal/vault"
 )
@@ -25,6 +26,8 @@ type Project struct {
 	Repos      []gitx.Repo     `json:"repos"`
 	RepoCount  int             `json:"repoCount"`
 	Pending    int             `json:"pending"`
+	EnvDir     string          `json:"envDir,omitempty"`
+	EnvFile    string          `json:"envFile,omitempty"`
 	DocsFolder string          `json:"docsFolder,omitempty"`
 	Notes      []vault.Note    `json:"notes"`
 	Sessions   []agent.Session `json:"sessions"`
@@ -74,6 +77,17 @@ func scanOne(ctx context.Context, dir string, cfg *config.Config) Project {
 		if r.Pending {
 			p.Pending++
 		}
+	}
+
+	// A docker environment is auto-detected, never configured: a compose
+	// file at the project root wins over one in any of its repos (the
+	// environment belongs to the project, a repo merely runs in it).
+	candidates := append([]string{dir}, make([]string, 0, len(p.Repos))...)
+	for _, r := range p.Repos {
+		candidates = append(candidates, r.Path)
+	}
+	if ed, ef := env.Detect(candidates); ed != "" {
+		p.EnvDir, p.EnvFile = ed, ef
 	}
 
 	if sessions, err := agent.Recent(dir, cfg.SessionLimit); err != nil {

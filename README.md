@@ -31,29 +31,27 @@ degrade the UI instead of failing it.
 ## Layout (lazygit-shaped)
 
 ```
-╭──────────────────────╮╭───────────────────────────────────────────╮
-│ PROJECTS · 4         ││ OPEN IN · repo · branch · dirty 3         │
-│ > 1 obsidian   (1)   ││ g lazygit · t terminal · c code · a …     │
-│   2 omarchy    (1)   │╰───────────────────────────────────────────╯
-│   3 uh.humance.app   │╭ COMMITS · main · 15 ──────────────────────╮
-│   4 icampus.fei.org  ││ > 97d5fe3 Move files         santiago · 10m│
-╞══════════════════════╡│   82cde26 Audit +            santiago · 1h │
-│ REPOSITORIES · proj  │╰───────────────────────────────────────────╯
-│ > moodle405   ↑2     │╭ SESSIONS · repo · 20 ─────────────────────╮
-╰──────────────────────╡│ > Auditoría y curaduría 7d · $0.10 · repo  │
-                       ╰───────────────────────────────────────────╯
-                       ╭ NOTES · 5 ─────────────────────────────────╮
-                       │ > 30 areas/area.linux.md            18m    │
-                       ╰────────────────────────────────────────────╯
-tab/h/l panes · ↑/↓ move · enter act · 1-9 project · s session · d note · r rescan · q quit
+╭─ PROJECTS · 4 ──────────╮╭─ OPEN IN · repo · main · dirty 3 ──────╮
+│> 1 obsidian    (1)      ││g lazygit · t terminal · c code · a …   │
+│  2 omarchy     (1)      │╰────────────────────────────────────────╯
+│  3 uh.humance.app       │╭─ COMMITS · main · 15 ──────────────────╮
+│  4 icampus.fei.org      ││> 97d5fe3 Move files    santiago · 10m  │
+╰─────────────────────────╯│  82cde26 Audit +     santiago · 1h     │
+╭─ REPOSITORIES · proj ───╮╰────────────────────────────────────────╯
+│> moodle405   ↑2         │╭─ SESSIONS · repo · 20 ─────────────────╮
+╰─────────────────────────╯│> Auditoría y curaduría 7d · $0.10      │
+                           ╰────────────────────────────────────────╯
+                           ╭─ NOTES · 5 ────────────────────────────╮
+                           │> 30 areas/area.linux.md     26m        │
+                           ╰────────────────────────────────────────╯
 ```
 
-Five focusable panes (tab walks them). OPEN IN is a one-line bar: the
-git-status row menu's keys, same letters same meaning, acting on the
-selected repository. Commits load on demand for that repo (`git log`,
-newest 15); sessions narrow to it (falling back to the project's list);
-notes are the project's freshest vault files. The cockpit's own keys ride
-the footer, lazygit-style.
+Five focusable panes (tab walks them), titles sitting on the border,
+lazygit-style. OPEN IN is a one-line bar: the git-status row menu's keys,
+same letters same meaning, acting on the selected repository. Commits load
+on demand for that repo (`git log`, newest 15); sessions narrow to it
+(falling back to the project's list); notes are the project's freshest
+vault files. The cockpit's own keys ride the footer.
 
 ## Keys
 

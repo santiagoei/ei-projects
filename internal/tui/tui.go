@@ -440,7 +440,7 @@ func (m Model) View() string {
 	repoH := bodyH - projH
 
 	// right edge: one launcher row on top, three list panes under it
-	const actionH = 4
+	const actionH = 3
 	rest := bodyH - actionH
 	commitsH := clamp(rest*45/100, 5, rest-10)
 	sessionsH := clamp(rest*30/100, 5, rest-commitsH-5)
@@ -487,16 +487,33 @@ func (m Model) legend() string {
 	return line
 }
 
-func (m Model) border(active bool, title string, w, h int) (lipgloss.Style, string) {
+// pane renders a bordered box whose title sits ON the top border line --
+// "╭─ COMMITS · main ──────╮" lazygit-style -- so the title costs no
+// content row. The border characters are the only thing on that row, so
+// the whole line is rewritten in the pane's border color.
+func pane(active bool, title string, w, h int, body string) string {
 	fg := lipgloss.Color("244")
 	if active {
 		fg = lipgloss.Color("204")
 	}
-	return lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(fg).
-			Width(w - 2).Height(h - 2),
-		lipgloss.NewStyle().Bold(true).Foreground(fg).Render(title)
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(fg).
+		Width(w - 2).Height(h - 2)
+	lines := strings.Split(box.Render(body), "\n")
+	if len(lines) > 0 {
+		t := clip(title, w-6)
+		headW := 4 + lipgloss.Width(t) // "╭─ " + title + " "
+		fill := w - headW - 1          // minus the "╮"
+		if fill < 1 {
+			fill = 1
+		}
+		base := lipgloss.NewStyle().Foreground(fg)
+		lines[0] = base.Render("╭─ ") +
+			base.Bold(true).Render(t) +
+			base.Render(" "+strings.Repeat("─", fill)+"╮")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) paneProjects(w, h int) string {
@@ -521,8 +538,8 @@ func (m Model) paneProjects(w, h int) string {
 	if len(lines) == 0 {
 		lines = []string{dimStyle.Render("(no projects)")}
 	}
-	box, title := m.border(m.focus == paneProjects, fmt.Sprintf("PROJECTS · %d", len(m.report.Projects)), w, h)
-	return box.Render(title + "\n" + listWindow(lines, m.project, h-4))
+	return pane(m.focus == paneProjects, fmt.Sprintf("PROJECTS · %d", len(m.report.Projects)), w, h,
+		listWindow(lines, m.project, h-2))
 }
 
 func (m Model) paneRepos(w, h int) string {
@@ -544,8 +561,7 @@ func (m Model) paneRepos(w, h int) string {
 	if n := m.proj().Name; n != "" {
 		title += " · " + n
 	}
-	box, t := m.border(m.focus == paneRepos, title, w, h)
-	return box.Render(t + "\n" + listWindow(lines, m.repo, h-4))
+	return pane(m.focus == paneRepos, title, w, h, listWindow(lines, m.repo, h-2))
 }
 
 // repoState is the compact "dirty 3 ↑2 ↓1" suffix used wherever a repo
@@ -592,8 +608,7 @@ func (m Model) paneOpenIn(w, h int) string {
 	for _, k := range keys {
 		parts = append(parts, keyStyle.Render(k.key)+dimStyle.Render(" "+k.label))
 	}
-	box, t := m.border(false, title, w, h)
-	return box.Render(t + "\n" + strings.Join(parts, warnStyle.Render(" · ")))
+	return pane(false, title, w, h, strings.Join(parts, warnStyle.Render(" · ")))
 }
 
 var (
@@ -640,8 +655,8 @@ func (m Model) paneCommits(w, h int) string {
 			lines = []string{dimStyle.Render("(no commits)")}
 		}
 	}
-	box, t := m.border(m.focus == paneCommits, title, w, h)
-	return box.Render(t + "\n" + listWindow(lines, m.cursors[paneCommits], h-3))
+	return pane(m.focus == paneCommits, title, w, h,
+		listWindow(lines, m.cursors[paneCommits], h-2))
 }
 
 func (m Model) paneSessions(w, h int) string {
@@ -660,8 +675,8 @@ func (m Model) paneSessions(w, h int) string {
 	if len(lines) == 0 {
 		lines = []string{dimStyle.Render("(no sessions)")}
 	}
-	box, t := m.border(m.focus == paneSessions, title, w, h)
-	return box.Render(t + "\n" + listWindow(lines, m.cursors[paneSessions], h-3))
+	return pane(m.focus == paneSessions, title, w, h,
+		listWindow(lines, m.cursors[paneSessions], h-2))
 }
 
 func (m Model) paneNotes(w, h int) string {
@@ -675,8 +690,8 @@ func (m Model) paneNotes(w, h int) string {
 	if len(lines) == 0 {
 		lines = []string{dimStyle.Render("(no notes)")}
 	}
-	box, t := m.border(m.focus == paneNotes, title, w, h)
-	return box.Render(t + "\n" + listWindow(lines, m.cursors[paneNotes], h-3))
+	return pane(m.focus == paneNotes, title, w, h,
+		listWindow(lines, m.cursors[paneNotes], h-2))
 }
 
 // row paints the selection marker for a pane's own list: a selected row in

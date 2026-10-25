@@ -159,7 +159,9 @@ func (m Model) sessionsFor() []agent.Session {
 	return out
 }
 
-func (m Model) selectProject(i int) {
+// selectProject mutates: the receiver MUST be a pointer -- with a value
+// receiver the new project silently evaporated when the method returned.
+func (m *Model) selectProject(i int) {
 	if i == m.project {
 		return
 	}
@@ -419,6 +421,7 @@ func (m *Model) reported(err error, what, target string) {
 
 var (
 	selectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("204"))
+	keyStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255"))
 	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	warnStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 )
@@ -433,23 +436,52 @@ func (m Model) View() string {
 
 	leftW := clamp(m.width*36/100, 30, 52)
 	rightW := m.width - leftW
-	bodyH := m.height - 1 // status row
+	// two bottom rows: transient status, then the app shortcut bar
+	bodyH := m.height - 2
 
-	projH := clamp(m.height*42/100, 7, m.height-11)
+	projH := clamp(m.height*42/100, 7, m.height-13)
 	repoH := bodyH - projH
-	shortH := clamp(9, 6, bodyH-6)
-	ctxPane := m.paneContext(rightW, bodyH-shortH)
+	actionH := clamp(11, 8, bodyH-6)
+	ctxPane := m.paneContext(rightW, bodyH-actionH)
 
 	projects := m.paneProjects(leftW, projH)
 	repos := m.paneRepos(leftW, repoH)
-	shortcuts := m.paneShortcuts(rightW, shortH)
+	actions := m.paneActions(rightW, actionH)
 
 	left := lipgloss.JoinVertical(lipgloss.Left, projects, repos)
-	right := lipgloss.JoinVertical(lipgloss.Left, shortcuts, ctxPane)
+	right := lipgloss.JoinVertical(lipgloss.Left, actions, ctxPane)
 	frame := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
 	status := m.statusLine()
-	return frame + "\n" + status
+	legend := m.legend()
+	return frame + "\n" + status + "\n" + legend
+}
+
+// legend is the app shortcut bar along the bottom -- the keys that belong
+// to the cockpit itself, not to a selected repository (those live in the
+// top-right OPEN IN pane).
+func (m Model) legend() string {
+	keys := []struct{ key, label string }{
+		{"tab/h/l", "panes"},
+		{"[/]", "sections"},
+		{"↑/↓", "move"},
+		{"enter", "act"},
+		{"1-9", "project"},
+		{"s", "session"},
+		{"d", "note"},
+		{"r", "rescan"},
+		{"q", "quit"},
+	}
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, keyStyle.Render(k.key)+dimStyle.Render(" "+k.label))
+	}
+	line := strings.Join(parts, dimStyle.Render(" · "))
+	if lipgloss.Width(line) > m.width {
+		// still cramped? drop the rarer keys, keep navigation
+		line = strings.Join(parts[:6], dimStyle.Render(" · "))
+	}
+	return line
 }
 
 func (m Model) border(active bool, title string, w, h int) (lipgloss.Style, string) {
@@ -522,35 +554,62 @@ func (m Model) paneRepos(w, h int) string {
 	return box.Render(t + "\n" + listWindow(lines, m.repo, h-4))
 }
 
-func (m Model) paneShortcuts(w, h int) string {
-	lines := []string{
-		"tab/l focus · h/esc back · [ ] section",
-		"1-9 project · r rescan · q quit",
-		"",
-		"g lazygit · t terminal · c editor",
-		"a agent · e files · y copy",
-	}
-	switch m.focus {
-	case paneProjects:
-		lines = append(lines, "enter → repositories")
-	case paneRepos:
-		lines = append(lines, "enter → lazygit")
-	default:
-		switch m.sec {
-		case sectionCommits:
-			lines = append(lines, "enter/y → copy sha")
-		case sectionSessions:
-			lines = append(lines, "enter/s → resume session")
-		default:
-			lines = append(lines, "enter/d → open note")
+func (m Model) paneActions(w, h int) string {
+	var lines []string
+	title := "ACTIONS"
+	if repo, ok := m.selectedRepo(); ok {
+		state := "clean"
+		switch {
+		case repo.Error != "":
+			state = "error"
+		case repo.Dirty:
+			state = fmt.Sprintf("dirty %d", repo.Changes)
 		}
+		if repo.Ahead > 0 {
+			state += fmt.Sprintf(" ↑%d", repo.Ahead)
+		}
+		if repo.Behind > 0 {
+			state += fmt.Sprintf(" ↓%d", repo.Behind)
+		}
+		head := clip(filepath.Base(repo.Path), 24) + " " + dimStyle.Render(clip(repo.Branch+" · "+state, w-lipgloss.Width(filepath.Base(repo.Path))-8))
+		lines = append(lines, clip(head, w-4), "")
+		title = "OPEN IN"
+	} else {
+		lines = append(lines, dimStyle.Render("(no repository selected)"), "")
 	}
-	body := make([]string, 0, len(lines))
-	for _, l := range lines {
-		body = append(body, dimStyle.Render(clip(l, w-4)))
+	// The panel's row menu, verbatim: same letters, same meaning, so the
+	// muscle memory built in the bar popup carries into the cockpit.
+	agent := "agent"
+	if a := defaultAgent(); a != "" {
+		agent = a
 	}
-	box, t := m.border(false, "SHORTCUTS", w, h)
-	return box.Render(t + "\n" + strings.Join(body, "\n"))
+	rows := []struct{ key, label string }{
+		{"g", "Open lazygit"},
+		{"t", "Open in terminal"},
+		{"c", "Open in code"},
+		{"a", "Open in " + agent},
+		{"e", "Open in file explorer"},
+		{"y", "Copy path"},
+	}
+	for _, r := range rows {
+		lines = append(lines, selectedStyle.Render(" "+r.key+" ")+" "+r.label)
+	}
+	box, t := m.border(false, title, w, h)
+	return box.Render(t + "\n" + strings.Join(lines, "\n"))
+}
+
+// defaultAgent mirrors what the bar panel shows: omarchy stores the
+// configured agent name in a plain file.
+func defaultAgent() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".config", "omarchy", "defaults", "agent"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func (m Model) paneContext(w, h int) string {

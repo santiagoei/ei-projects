@@ -32,33 +32,51 @@ degrade the UI instead of failing it.
 
 ```
 ╭──────────────────────╮╭───────────────────────────────────────────╮
-│ PROJECTS · 4         ││ SHORTCUTS   (keys for the current focus)  │
-│ > 1 obsidian         │╰───────────────────────────────────────────╯
-│   2 omarchy  (1)     │╭───────────────────────────────────────────╮
-│   ...                ││ [COMMITS]· SESSIONS · NOTES  main @ repo  │
-╞══════════════════════╡│ > 97d5fe3 Move files        santiago · 10m│
-│ REPOSITORIES · proj  ││   82cde26 Audit +           santiago · 1h │
-│ > obsidian  dirty 2  │╰───────────────────────────────────────────╯
-╰──────────────────────╯
+│ PROJECTS · 4         ││ OPEN IN  (the selected repo's ⋯ menu)     │
+│ > 1 obsidian   (1)   ││   icampus  main · dirty 3                 │
+│   2 omarchy    (1)   ││   g Open lazygit · t Open in terminal     │
+│   3 uh.humance.app   ││   c Open in code  · a Open in opencode    │
+│   4 icampus.fei.org  ││   e Open in file explorer · y Copy path   │
+╞══════════════════════╡╰───────────────────────────────────────────╯
+│ REPOSITORIES · proj  │╭───────────────────────────────────────────╮
+│ > moodle405   ↑2     ││ [COMMITS]· SESSIONS · NOTES   main @ repo │
+╰──────────────────────╯│ > 97d5fe3 Move files        santiago · 10m│
+                         ╰───────────────────────────────────────────╯
+tab/h/l panes · [/] sections · ↑/↓ move · enter act · 1-9 project ·
+s session · d note · r rescan · q quit
 ```
 
-Commits load on demand for the selected repo (`git log`, newest 15);
-sessions narrow from the project list to the selected repo's directory.
+The repo launchers live in the top-right pane (the same keys, labels and
+meaning as the bar panel's row menu); the app's own keys ride the footer,
+lazygit-style. Commits load on demand for the selected repo (`git log`,
+newest 15); sessions narrow from the project list to the selected repo's
+directory.
 
 ## Keys
 
+Repo launchers (top-right **OPEN IN** pane, same as the bar panel's row menu):
+
+| key   | action                        |
+|-------|-------------------------------|
+| `g`   | Open lazygit                  |
+| `t`   | Open in terminal              |
+| `c`   | Open in code                  |
+| `a`   | Open in `<agent>` (from `omarchy default agent`) |
+| `e`   | Open in file explorer         |
+| `y`   | Copy path (of the focused row when in context, else the repo) |
+
+Navigation (the footer bar):
+
 | key         | action                                            |
 |-------------|---------------------------------------------------|
-| `tab` `l` `→` / `h` `←` | cycle focus: projects → repos → context    |
+| `tab` `l` `→` / `h` `←` `esc` | cycle focus: projects → repos → context (`esc` at projects quits) |
 | `[` / `]`   | context section: commits / sessions / notes       |
 | `↑/↓` `j/k` | move within the focused pane                      |
 | `enter`     | projects: to repos · repos: lazygit · context: act on the row |
-| `g` `t` `c` `a` `e` `y` | selected repo: lazygit / terminal / editor / agent / files / copy path |
-| `s`         | resume the selected session (terminal at its dir) |
-| `d`         | open the selected note                            |
+| `s` / `d`   | resume the selected session / open the selected note |
 | `1`–`9`     | jump to project N                                 |
 | `r`         | rescan                                            |
-| `esc` / `q` | one pane back / quit                              |
+| `q`         | quit                                              |
 
 ## Install
 

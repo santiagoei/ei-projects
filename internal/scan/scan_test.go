@@ -48,6 +48,17 @@ func TestRunEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// build a real repo through the full path (tmp git repo, one commit)
+	if err := os.MkdirAll(filepath.Join(watch, "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, watch, "init", "-q", "-b", "main", filepath.Join(watch, "repo"))
+	if err := os.WriteFile(filepath.Join(watch, "repo", "r"), []byte("r"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, filepath.Join(watch, "repo"), "add", ".")
+	git(t, filepath.Join(watch, "repo"), "commit", "-q", "-m", "r")
+
 	vaultRoot := filepath.Join(home, "obsidian")
 	if err := os.MkdirAll(filepath.Join(vaultRoot, "Clientes", "icampus"), 0o755); err != nil {
 		t.Fatal(err)
@@ -98,7 +109,7 @@ func TestRunEndToEnd(t *testing.T) {
 	if p == nil {
 		t.Fatalf("project missing: %+v", rep.Projects)
 	}
-	if p.RepoCount != 1 || p.Pending != 1 {
+	if p.RepoCount != 2 || p.Pending != 1 { // the watch root + the nested repo
 		t.Fatalf("git feed: %+v", *p)
 	}
 	if p.DocsFolder == "" || len(p.Notes) != 1 || p.Notes[0].Rel != filepath.Join("Sprint.md") {

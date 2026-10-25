@@ -120,6 +120,26 @@ func TestMissingDatabase(t *testing.T) {
 	}
 }
 
+// opencode 2.14 moved session history to a JSONL store: no session table
+// (in either spelling) is not a broken schema, it is simply no sessions.
+func TestNoSessionTablesDegradesQuietly(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("no sqlite3")
+	}
+	db := filepath.Join(t.TempDir(), "opencode.db")
+	out, err := exec.Command("sqlite3", db,
+		"CREATE TABLE session_message(id TEXT); CREATE TABLE event(id TEXT);").CombinedOutput()
+	if err != nil {
+		t.Fatalf("seed: %v\n%s", err, out)
+	}
+	t.Setenv("EI_PROJECTS_OPENCODE_DB", db)
+	// ErrNoDatabase is the degradation scan.silentFeedError swallows: a db
+	// with no session tables is as unusable for this feed as an absent one.
+	if got, err := Recent("/x", 5); err != ErrNoDatabase || len(got) != 0 {
+		t.Fatalf("want silent ErrNoDatabase, got %+v %v", got, err)
+	}
+}
+
 // opencode 2.x writes session_v2 and freezes the legacy session table:
 // with both present, only the live one may answer.
 func TestPrefersSessionV2(t *testing.T) {

@@ -22,7 +22,7 @@ project's freshest **vault notes**. The frame lives in `## Layout` below.
 |----------|--------|------|
 | Projects | the `watchDirs` of the `ei.git-status` widget in `~/.config/omarchy/shell.json` | a read of your existing config |
 | Repos    | `git status` etc., parallel, same flags as the panel's scanner (`--no-optional-locks`, fsmonitor off) | ~0.2 s for 15 repos on ntfs |
-| Sessions | `~/.local/share/opencode/opencode.db` via `sqlite3 -readonly` — prefers `session_v2`, falls back to `session`, guards required columns | one subprocess |
+| Sessions | `~/.local/share/opencode/opencode.db` via `sqlite3 -json` — read-only first, a plain connection on a refused or mysteriously-empty read (the live db carries a WAL that can reject read-only mid-checkpoint); prefers `session_v2`, falls back to `session`, guards required columns | one subprocess |
 | Todos    | the same db's `todo` table, for the session under the cursor: its open items (`pending`/`in_progress`) appear in the status line | one subprocess per selection |
 | Envs     | a `docker-compose.yml`/`compose.yaml` auto-detected at the project root (or any repo root); state via `docker compose ps --format json` | four stats + one subprocess |
 | Notes    | the vault on disk, `.md` files by mtime, matched per project by name tokens or `docsMap` | a walk |

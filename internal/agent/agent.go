@@ -1,7 +1,7 @@
 // Package agent reads opencode's session history straight out of its SQLite
-// database, the way omarchy-agent-sessions does: read-only, one subprocess,
-// with column guards so an opencode schema change degrades the sessions
-// feed instead of breaking the whole cockpit.
+// database, the way omarchy-agent-sessions does: one subprocess with a
+// read-only-first connection, with column guards so an opencode schema
+// change degrades the sessions feed instead of breaking the whole cockpit.
 package agent
 
 import (
@@ -49,6 +49,37 @@ func DBPath() string {
 	return filepath.Join(data, "opencode", "opencode.db")
 }
 
+// queryJSON runs one SELECT the way the proven picking script does it:
+// read-only first, and only if that refuses a plain connection. Opencode
+// keeps a live WAL sidecar on a multi-hundred-megabyte db, and a read-only
+// open can be refused mid-checkpoint; every query here is a SELECT, so the
+// fallback reads without ever writing data.
+func queryJSON(db, sql string) ([]byte, error) {
+	if out, err := exec.Command("sqlite3", "-readonly", "-json", db, sql).Output(); err == nil {
+		return out, nil
+	}
+	if out, err := exec.Command("sqlite3", "-json", db, sql).Output(); err == nil {
+		return out, nil
+	}
+	return nil, ErrNoDatabase
+}
+
+// queryMeta is queryJSON for schema questions (sqlite_master, PRAGMA). A
+// read-only connection mid-checkpoint can answer with exit 0 and NO
+// output, which a schema probe must not trust as "no such table": empty
+// for a healthy db is impossible, so a second opinion via a plain
+// connection decides.
+func queryMeta(db, sql string) ([]byte, error) {
+	out, err := queryJSON(db, sql)
+	if err != nil || len(strings.TrimSpace(string(out))) > 0 {
+		return out, err
+	}
+	if out2, err2 := exec.Command("sqlite3", "-json", db, sql).Output(); err2 == nil && len(strings.TrimSpace(string(out2))) > 0 {
+		return out2, nil
+	}
+	return out, nil
+}
+
 // required mirrors omarchy-agent-sessions' column check. cost is required
 // too (the panel of scripts already depends on it); if opencode drops it,
 // failing loudly for the feed is the designed behavior.
@@ -56,16 +87,23 @@ var required = []string{"id", "title", "directory", "parent_id", "time_updated",
 
 // sessionTable picks where sessions actually live: opencode 2.x writes
 // session_v2 and leaves the old session table as a frozen legacy mirror,
-// so the newest table wins when both exist. Older builds get the fallback.
+// so the newest table wins when both exist (verified: the legacy mirror
+// stopped advancing in October while session_v2 stays current). Older
+// builds get the fallback; a database that holds neither degrades to "no
+// sessions", not an error -- opencode has already moved storage once
+// (the old JSON-file store) and a read-only connection that answers the
+// schema probe with nothing at all mid-checkpoint is handled by queryMeta.
 func sessionTable(db string) (string, error) {
-	out, err := exec.Command("sqlite3", "-readonly", "-json", db,
-		"SELECT name FROM sqlite_master WHERE type='table' AND name IN ('session_v2','session');").Output()
+	out, err := queryMeta(db, "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('session_v2','session');")
 	if err != nil {
-		return "", ErrNoDatabase
+		return "", err
 	}
 	var rows []struct{ Name string }
+	if strings.TrimSpace(string(out)) == "" {
+		return "", ErrNoDatabase // no session tables at all
+	}
 	if err := json.Unmarshal(out, &rows); err != nil {
-		return "", err
+		return "", ErrNoDatabase
 	}
 	have := map[string]bool{}
 	for _, r := range rows {
@@ -99,7 +137,7 @@ func Recent(root string, limit int) ([]Session, error) {
 	}
 	have, err := columns(db, table)
 	if err != nil {
-		return nil, err
+		return nil, ErrSchema
 	}
 	for _, c := range required {
 		if !have[c] {
@@ -119,9 +157,9 @@ func Recent(root string, limit int) ([]Session, error) {
 			"ORDER BY time_updated DESC LIMIT %d;",
 		table, esc, esc, limit)
 
-	out, err := exec.Command("sqlite3", "-readonly", "-json", db, q).Output()
+	out, err := queryJSON(db, q)
 	if err != nil {
-		return nil, fmt.Errorf("session query: %w", err)
+		return nil, err
 	}
 	if trimmed := strings.TrimSpace(string(out)); trimmed == "" {
 		return nil, nil // empty result: sqlite3 -json prints nothing
@@ -147,15 +185,15 @@ func Recent(root string, limit int) ([]Session, error) {
 }
 
 func columns(db, table string) (map[string]bool, error) {
-	out, err := exec.Command("sqlite3", "-readonly", "-json", db, "PRAGMA table_info("+table+");").Output()
+	out, err := queryMeta(db, "PRAGMA table_info("+table+");")
 	if err != nil {
-		return nil, fmt.Errorf("%s table? %w", table, err)
+		return nil, err
 	}
 	var rows []struct {
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal(out, &rows); err != nil {
-		return nil, fmt.Errorf("table_info: %w", err)
+		return nil, err
 	}
 	have := make(map[string]bool, len(rows))
 	for _, r := range rows {
@@ -192,16 +230,16 @@ func OpenTodos(sessionID string) ([]Todo, error) {
 		"SELECT content, status FROM todo "+
 			"WHERE session_id = '%s' AND status IN ('pending','in_progress') "+
 			"ORDER BY position, time_created;", esc)
-	out, err := exec.Command("sqlite3", "-readonly", "-json", db, q).Output()
+	out, err := queryJSON(db, q)
 	if err != nil {
-		return nil, fmt.Errorf("todo query: %w", err)
+		return nil, nil
 	}
 	if strings.TrimSpace(string(out)) == "" {
 		return nil, nil
 	}
 	var rows []Todo
 	if err := json.Unmarshal(out, &rows); err != nil {
-		return nil, fmt.Errorf("todo rows: %w", err)
+		return nil, nil
 	}
 	for i := range rows {
 		rows[i].Content = strings.Join(strings.Fields(rows[i].Content), " ")

@@ -9,11 +9,11 @@ the recent **opencode sessions** worked on in them, and the newest
 Built for Omarchy + Hyprland + foot; designed to be opened from a
 keybind into a floating, centered window (see the setup below).
 
-Four panes, lazygit-shaped: projects (top-left), the selected project's
-repositories (bottom-left), live shortcuts (top-right), and a tabbed
-context pane (bottom-right) with the repo's **commits**, its **opencode
-sessions**, and the project's freshest **vault notes**. The frame lives
-in `## Layout` below.
+Five focusable panes, lazygit-shaped: projects (top-left), the selected
+project's repositories (bottom-left), a one-line **OPEN IN** launcher bar
+for the selected repo (top-right), and beneath it three stacked list
+panes: the repo's **commits**, its **opencode sessions**, and the
+project's freshest **vault notes**. The frame lives in `## Layout` below.
 
 ## What it reads
 
@@ -32,25 +32,28 @@ degrade the UI instead of failing it.
 
 ```
 ╭──────────────────────╮╭───────────────────────────────────────────╮
-│ PROJECTS · 4         ││ OPEN IN  (the selected repo's ⋯ menu)     │
-│ > 1 obsidian   (1)   ││   icampus  main · dirty 3                 │
-│   2 omarchy    (1)   ││   g Open lazygit · t Open in terminal     │
-│   3 uh.humance.app   ││   c Open in code  · a Open in opencode    │
-│   4 icampus.fei.org  ││   e Open in file explorer · y Copy path   │
-╞══════════════════════╡╰───────────────────────────────────────────╯
-│ REPOSITORIES · proj  │╭───────────────────────────────────────────╮
-│ > moodle405   ↑2     ││ [COMMITS]· SESSIONS · NOTES   main @ repo │
-╰──────────────────────╯│ > 97d5fe3 Move files        santiago · 10m│
-                         ╰───────────────────────────────────────────╯
-tab/h/l panes · [/] sections · ↑/↓ move · enter act · 1-9 project ·
-s session · d note · r rescan · q quit
+│ PROJECTS · 4         ││ OPEN IN · repo · branch · dirty 3         │
+│ > 1 obsidian   (1)   ││ g lazygit · t terminal · c code · a …     │
+│   2 omarchy    (1)   │╰───────────────────────────────────────────╯
+│   3 uh.humance.app   │╭ COMMITS · main · 15 ──────────────────────╮
+│   4 icampus.fei.org  ││ > 97d5fe3 Move files         santiago · 10m│
+╞══════════════════════╡│   82cde26 Audit +            santiago · 1h │
+│ REPOSITORIES · proj  │╰───────────────────────────────────────────╯
+│ > moodle405   ↑2     │╭ SESSIONS · repo · 20 ─────────────────────╮
+╰──────────────────────╡│ > Auditoría y curaduría 7d · $0.10 · repo  │
+                       ╰───────────────────────────────────────────╯
+                       ╭ NOTES · 5 ─────────────────────────────────╮
+                       │ > 30 areas/area.linux.md            18m    │
+                       ╰────────────────────────────────────────────╯
+tab/h/l panes · ↑/↓ move · enter act · 1-9 project · s session · d note · r rescan · q quit
 ```
 
-The repo launchers live in the top-right pane (the same keys, labels and
-meaning as the bar panel's row menu); the app's own keys ride the footer,
-lazygit-style. Commits load on demand for the selected repo (`git log`,
-newest 15); sessions narrow from the project list to the selected repo's
-directory.
+Five focusable panes (tab walks them). OPEN IN is a one-line bar: the
+git-status row menu's keys, same letters same meaning, acting on the
+selected repository. Commits load on demand for that repo (`git log`,
+newest 15); sessions narrow to it (falling back to the project's list);
+notes are the project's freshest vault files. The cockpit's own keys ride
+the footer, lazygit-style.
 
 ## Keys
 
@@ -69,11 +72,10 @@ Navigation (the footer bar):
 
 | key         | action                                            |
 |-------------|---------------------------------------------------|
-| `tab` `l` `→` / `h` `←` `esc` | cycle focus: projects → repos → context (`esc` at projects quits) |
-| `[` / `]`   | context section: commits / sessions / notes       |
+| `tab` `l` `→` / `h` `←` `esc` | cycle the five panes: projects → repos → commits → sessions → notes (`esc` at projects quits) |
 | `↑/↓` `j/k` | move within the focused pane                      |
-| `enter`     | projects: to repos · repos: lazygit · context: act on the row |
-| `s` / `d`   | resume the selected session / open the selected note |
+| `enter`     | projects: to repos · repos: lazygit · commits: copy sha · sessions: resume · notes: open |
+| `s` / `d`   | resume the marked session / open the marked note  |
 | `1`–`9`     | jump to project N                                 |
 | `r`         | rescan                                            |
 | `q`         | quit                                              |

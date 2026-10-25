@@ -1,7 +1,8 @@
-// Package tui is the cockpit: a lazygit-shaped frame of four panes over a
+// Package tui is the cockpit: a lazygit-shaped frame of five panes over a
 // scan.Report -- projects top-left, the selected project's repositories
-// bottom-left, shortcuts top-right, and a tabbed context pane bottom-right
-// (commits, opencode sessions, vault notes). Focus walks panes with
+// bottom-left, and down the right edge: a one-line OPEN IN launcher bar for
+// the selected repository, then three stacked list panes (commits, opencode
+// sessions, vault notes), each with its own cursor. Focus walks panes with
 // tab/h/l; the git history loads on demand for the selected repo so the
 // standing scan stays cheap.
 package tui
@@ -11,8 +12,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -35,15 +36,10 @@ type paneFocus int
 const (
 	paneProjects paneFocus = iota
 	paneRepos
-	paneContext
-)
-
-type section int
-
-const (
-	sectionCommits section = iota
-	sectionSessions
-	sectionNotes
+	paneCommits
+	paneSessions
+	paneNotes
+	paneCount
 )
 
 type scanDoneMsg struct {
@@ -51,7 +47,7 @@ type scanDoneMsg struct {
 	err    error
 }
 
-// commitsDoneMsg carries the pane it belongs to: a reply for a repo the
+// commitsDoneMsg carries the repo it belongs to: a reply for a repo the
 // user has already walked past is dropped, never rendered.
 type commitsDoneMsg struct {
 	repoPath string
@@ -63,10 +59,9 @@ type Model struct {
 	cfg     *config.Config
 	report  scan.Report
 	focus   paneFocus
-	sec     section
 	project int
 	repo    int
-	cursors map[section]int
+	cursors map[paneFocus]int
 
 	loading        bool
 	commits        []gitx.Commit
@@ -83,7 +78,7 @@ func New(cfg *config.Config) Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("204"))
-	return Model{cfg: cfg, spinner: sp, cursors: map[section]int{}, loading: true}
+	return Model{cfg: cfg, spinner: sp, cursors: map[paneFocus]int{}, loading: true}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -159,6 +154,20 @@ func (m Model) sessionsFor() []agent.Session {
 	return out
 }
 
+// listCount is the row count of the focus panes that have their own cursor
+// (the list panes; projects/repos move through m.project / m.repo).
+func (m Model) listCount(p paneFocus) int {
+	switch p {
+	case paneCommits:
+		return len(m.commits)
+	case paneSessions:
+		return len(m.sessionsFor())
+	case paneNotes:
+		return len(m.proj().Notes)
+	}
+	return 0
+}
+
 // selectProject mutates: the receiver MUST be a pointer -- with a value
 // receiver the new project silently evaporated when the method returned.
 func (m *Model) selectProject(i int) {
@@ -167,7 +176,7 @@ func (m *Model) selectProject(i int) {
 	}
 	m.project = clamp(i, 0, len(m.report.Projects)-1)
 	m.repo = 0
-	m.cursors = map[section]int{}
+	m.cursors = map[paneFocus]int{}
 	m.commits = nil
 	m.commitsFor = ""
 }
@@ -192,6 +201,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if repos := m.proj().Repos; m.repo >= len(repos) {
 			m.repo = clamp(m.repo, 0, len(repos)-1)
 		}
+		for _, p := range []paneFocus{paneCommits, paneSessions, paneNotes} {
+			m.cursors[p] = clamp(m.cursors[p], 0, m.listCount(p)-1)
+		}
 		return m, m.commitsCmd()
 
 	case commitsDoneMsg:
@@ -203,6 +215,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.commitsLoading = false
+		m.cursors[paneCommits] = clamp(m.cursors[paneCommits], 0, len(m.commits)-1)
 		return m, m.tickIfBusy()
 
 	case spinner.TickMsg:
@@ -233,23 +246,17 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		return m, tea.Batch(m.scanCmd(), m.spinner.Tick)
 	case "tab", "l", "right":
-		m.focus = (m.focus + 1) % 3
+		m.focus = (m.focus + 1) % paneCount
 		return m, nil
 	case "shift+tab", "h", "left", "esc":
 		if m.focus == paneProjects {
 			if key == "esc" {
 				return m, tea.Quit
 			}
-			m.focus = paneContext
+			m.focus = paneNotes
 		} else {
 			m.focus--
 		}
-		return m, nil
-	case "[":
-		m.sec = (m.sec + 2) % 3
-		return m, nil
-	case "]":
-		m.sec = (m.sec + 1) % 3
 		return m, nil
 	}
 
@@ -262,7 +269,7 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.commitsCmd()
 	}
 
-	// Global actions on the selected repo (the shortcuts pane's promise).
+	// Global actions on the selected repo (the OPEN IN bar's promise).
 	if fn, ok := m.repoAction(key); ok {
 		if repo, has := m.selectedRepo(); has {
 			m.reported(fn(repo.Path), key, repo.Path)
@@ -316,21 +323,13 @@ func (m Model) moveCursor(dy int) (tea.Model, tea.Cmd) {
 		m.repo = clamp(m.repo+dy, 0, n-1)
 		return m, m.commitsCmd()
 	default:
-		m.cursors[m.sec] = clamp(m.cursors[m.sec]+dy, 0, m.sectionCount(m.sec)-1)
+		n := m.listCount(m.focus)
+		if n == 0 {
+			return m, nil
+		}
+		m.cursors[m.focus] = clamp(m.cursors[m.focus]+dy, 0, n-1)
 	}
 	return m, nil
-}
-
-func (m Model) sectionCount(sec section) int {
-	p := m.proj()
-	switch sec {
-	case sectionCommits:
-		return len(m.commits)
-	case sectionSessions:
-		return len(m.sessionsFor())
-	default:
-		return len(p.Notes)
-	}
 }
 
 func (m Model) onEnter() (tea.Model, tea.Cmd) {
@@ -341,22 +340,19 @@ func (m Model) onEnter() (tea.Model, tea.Cmd) {
 		if repo, ok := m.selectedRepo(); ok {
 			m.reported(actions.Lazygit(repo.Path), "lazygit", repo.Path)
 		}
-	default:
-		switch m.sec {
-		case sectionCommits:
-			return m.actCopy()
-		case sectionSessions:
-			return m.actSession()
-		default:
-			return m.actNote()
-		}
+	case paneCommits:
+		return m.actCopy()
+	case paneSessions:
+		return m.actSession()
+	default: // paneNotes
+		return m.actNote()
 	}
 	return m, nil
 }
 
 func (m Model) actSession() (tea.Model, tea.Cmd) {
 	list := m.sessionsFor()
-	i := m.cursors[sectionSessions]
+	i := m.cursors[paneSessions]
 	if i < 0 || i >= len(list) {
 		return m, nil
 	}
@@ -367,7 +363,7 @@ func (m Model) actSession() (tea.Model, tea.Cmd) {
 
 func (m Model) actNote() (tea.Model, tea.Cmd) {
 	notes := m.proj().Notes
-	i := m.cursors[sectionNotes]
+	i := m.cursors[paneNotes]
 	if i < 0 || i >= len(notes) {
 		return m, nil
 	}
@@ -377,27 +373,27 @@ func (m Model) actNote() (tea.Model, tea.Cmd) {
 
 func (m Model) actCopy() (tea.Model, tea.Cmd) {
 	var what string
-	switch {
-	case m.focus == paneProjects:
+	switch m.focus {
+	case paneProjects:
 		what = m.proj().Path
-	case m.focus == paneRepos:
+	case paneRepos:
 		if repo, ok := m.selectedRepo(); ok {
 			what = repo.Path
 		}
-	case m.sec == sectionCommits:
-		i := m.cursors[sectionCommits]
+	case paneCommits:
+		i := m.cursors[paneCommits]
 		if i >= 0 && i < len(m.commits) {
 			what = m.commits[i].Hash
 		}
-	case m.sec == sectionSessions:
+	case paneSessions:
 		list := m.sessionsFor()
-		i := m.cursors[sectionSessions]
+		i := m.cursors[paneSessions]
 		if i >= 0 && i < len(list) {
 			what = list[i].Directory
 		}
-	default:
+	default: // paneNotes
 		notes := m.proj().Notes
-		i := m.cursors[sectionNotes]
+		i := m.cursors[paneNotes]
 		if i >= 0 && i < len(notes) {
 			what = notes[i].Path
 		}
@@ -421,14 +417,15 @@ func (m *Model) reported(err error, what, target string) {
 
 var (
 	selectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("204"))
+	boldStyle     = lipgloss.NewStyle().Bold(true)
 	keyStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255"))
 	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	warnStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 )
 
 func (m Model) View() string {
-	if m.width < 60 || m.height < 14 {
-		return fmt.Sprintf("ei-projects: resize the window (want >= 60x14, have %dx%d)", m.width, m.height)
+	if m.width < 60 || m.height < 22 {
+		return fmt.Sprintf("ei-projects: resize the window (want >= 60x22, have %dx%d)", m.width, m.height)
 	}
 	if m.loading && m.report.Projects == nil {
 		return fmt.Sprintf("%s scanning projects…", m.spinner.View())
@@ -441,15 +438,23 @@ func (m Model) View() string {
 
 	projH := clamp(m.height*42/100, 7, m.height-13)
 	repoH := bodyH - projH
-	actionH := clamp(11, 8, bodyH-6)
-	ctxPane := m.paneContext(rightW, bodyH-actionH)
+
+	// right edge: one launcher row on top, three list panes under it
+	const actionH = 4
+	rest := bodyH - actionH
+	commitsH := clamp(rest*45/100, 5, rest-10)
+	sessionsH := clamp(rest*30/100, 5, rest-commitsH-5)
+	notesH := rest - commitsH - sessionsH
 
 	projects := m.paneProjects(leftW, projH)
 	repos := m.paneRepos(leftW, repoH)
-	actions := m.paneActions(rightW, actionH)
+	openIn := m.paneOpenIn(rightW, actionH)
+	commits := m.paneCommits(rightW, commitsH)
+	sessions := m.paneSessions(rightW, sessionsH)
+	notes := m.paneNotes(rightW, notesH)
 
 	left := lipgloss.JoinVertical(lipgloss.Left, projects, repos)
-	right := lipgloss.JoinVertical(lipgloss.Left, actions, ctxPane)
+	right := lipgloss.JoinVertical(lipgloss.Left, openIn, commits, sessions, notes)
 	frame := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
 	status := m.statusLine()
@@ -459,11 +464,10 @@ func (m Model) View() string {
 
 // legend is the app shortcut bar along the bottom -- the keys that belong
 // to the cockpit itself, not to a selected repository (those live in the
-// top-right OPEN IN pane).
+// top-right OPEN IN bar).
 func (m Model) legend() string {
 	keys := []struct{ key, label string }{
 		{"tab/h/l", "panes"},
-		{"[/]", "sections"},
 		{"↑/↓", "move"},
 		{"enter", "act"},
 		{"1-9", "project"},
@@ -478,8 +482,7 @@ func (m Model) legend() string {
 	}
 	line := strings.Join(parts, dimStyle.Render(" · "))
 	if lipgloss.Width(line) > m.width {
-		// still cramped? drop the rarer keys, keep navigation
-		line = strings.Join(parts[:6], dimStyle.Render(" · "))
+		line = strings.Join(parts[:4], dimStyle.Render(" · "))
 	}
 	return line
 }
@@ -504,7 +507,7 @@ func (m Model) paneProjects(w, h int) string {
 		case p.Missing:
 			label += "  " + warnStyle.Render("missing")
 		case p.Pending > 0:
-			label += "  " + fmt.Sprintf("(%d)", p.Pending)
+			label += fmt.Sprintf("  (%d)", p.Pending)
 		}
 		if len(label) > w-4 {
 			label = label[:w-4]
@@ -526,17 +529,8 @@ func (m Model) paneRepos(w, h int) string {
 	repos := m.proj().Repos
 	var lines []string
 	for i, r := range repos {
-		state := "clean"
-		switch {
-		case r.Error != "":
-			state = "error"
-		case r.Dirty:
-			state = fmt.Sprintf("dirty %d", r.Changes)
-		}
-		if r.Ahead > 0 {
-			state = fmt.Sprintf("%s ↑%d", state, r.Ahead)
-		}
-		label := clip(filepath.Base(r.Path), w-16) + " " + state
+		state := repoState(r)
+		label := clip(filepath.Base(r.Path), w-20) + " " + state
 		if i == m.repo {
 			lines = append(lines, selectedStyle.Render("> "+clip(label, w-4)))
 		} else {
@@ -554,140 +548,148 @@ func (m Model) paneRepos(w, h int) string {
 	return box.Render(t + "\n" + listWindow(lines, m.repo, h-4))
 }
 
-func (m Model) paneActions(w, h int) string {
-	var lines []string
-	title := "ACTIONS"
+// repoState is the compact "dirty 3 ↑2 ↓1" suffix used wherever a repo
+// is named.
+func repoState(r gitx.Repo) string {
+	state := "clean"
+	switch {
+	case r.Error != "":
+		state = "error"
+		return state
+	case r.Dirty:
+		state = fmt.Sprintf("dirty %d", r.Changes)
+	}
+	if r.Ahead > 0 {
+		state += fmt.Sprintf(" ↑%d", r.Ahead)
+	}
+	if r.Behind > 0 {
+		state += fmt.Sprintf(" ↓%d", r.Behind)
+	}
+	return state
+}
+
+// paneOpenIn is the one-line launcher bar: the git-status row menu's keys,
+// same letters same meaning, header carrying the repo it acts on.
+func (m Model) paneOpenIn(w, h int) string {
+	title := "OPEN IN"
 	if repo, ok := m.selectedRepo(); ok {
-		state := "clean"
-		switch {
-		case repo.Error != "":
-			state = "error"
-		case repo.Dirty:
-			state = fmt.Sprintf("dirty %d", repo.Changes)
-		}
-		if repo.Ahead > 0 {
-			state += fmt.Sprintf(" ↑%d", repo.Ahead)
-		}
-		if repo.Behind > 0 {
-			state += fmt.Sprintf(" ↓%d", repo.Behind)
-		}
-		head := clip(filepath.Base(repo.Path), 24) + " " + dimStyle.Render(clip(repo.Branch+" · "+state, w-lipgloss.Width(filepath.Base(repo.Path))-8))
-		lines = append(lines, clip(head, w-4), "")
-		title = "OPEN IN"
-	} else {
-		lines = append(lines, dimStyle.Render("(no repository selected)"), "")
+		title = clip(fmt.Sprintf("OPEN IN · %s · %s · %s",
+			filepath.Base(repo.Path), repo.Branch, repoState(repo)), w-8)
 	}
-	// The panel's row menu, verbatim: same letters, same meaning, so the
-	// muscle memory built in the bar popup carries into the cockpit.
-	agent := "agent"
-	if a := defaultAgent(); a != "" {
-		agent = a
+	agent := defaultAgent()
+	if agent == "" {
+		agent = "agent"
 	}
-	rows := []struct{ key, label string }{
-		{"g", "Open lazygit"},
-		{"t", "Open in terminal"},
-		{"c", "Open in code"},
-		{"a", "Open in " + agent},
-		{"e", "Open in file explorer"},
-		{"y", "Copy path"},
+	keys := []struct{ key, label string }{
+		{"g", "lazygit"},
+		{"t", "terminal"},
+		{"c", "code"},
+		{"a", agent},
+		{"e", "explorer"},
+		{"y", "copy path"},
 	}
-	for _, r := range rows {
-		lines = append(lines, selectedStyle.Render(" "+r.key+" ")+" "+r.label)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, keyStyle.Render(k.key)+dimStyle.Render(" "+k.label))
 	}
 	box, t := m.border(false, title, w, h)
-	return box.Render(t + "\n" + strings.Join(lines, "\n"))
+	return box.Render(t + "\n" + strings.Join(parts, warnStyle.Render(" · ")))
 }
+
+var (
+	agentOnce  sync.Once
+	agentCache string
+)
 
 // defaultAgent mirrors what the bar panel shows: omarchy stores the
-// configured agent name in a plain file.
+// configured agent name in a plain file. Read once; the cockpit does not
+// need to notice a mid-session "omarchy default agent" change.
 func defaultAgent() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	data, err := os.ReadFile(filepath.Join(home, ".config", "omarchy", "defaults", "agent"))
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
+	agentOnce.Do(func() {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return
+		}
+		data, err := os.ReadFile(filepath.Join(home, ".config", "omarchy", "defaults", "agent"))
+		if err != nil {
+			return
+		}
+		agentCache = strings.TrimSpace(string(data))
+	})
+	return agentCache
 }
 
-func (m Model) paneContext(w, h int) string {
-	tabs := []string{"COMMITS", "SESSIONS", "NOTES"}
-	head := make([]string, 3)
-	for i, t := range tabs {
-		if section(i) == m.sec {
-			head[i] = selectedStyle.Render("[" + t + "]")
-		} else {
-			head[i] = dimStyle.Render(" " + t + " ")
+func (m Model) paneCommits(w, h int) string {
+	repo, ok := m.selectedRepo()
+	title := "COMMITS"
+	var lines []string
+	switch {
+	case !ok:
+		lines = []string{dimStyle.Render("(no repository selected)")}
+	case m.commitsFor != repo.Path:
+		title = clip("COMMITS · "+repo.Branch, w-8)
+		lines = []string{m.spinner.View() + dimStyle.Render(" loading…")}
+	default:
+		title = clip(fmt.Sprintf("COMMITS · %s · %d", repo.Branch, len(m.commits)), w-8)
+		for i, c := range m.commits {
+			line := fmt.Sprintf("%s %-46s", c.Hash, clip(c.Subject, 44)) +
+				dimStyle.Render(fmt.Sprintf("%s · %s", c.Author, ageStr(c.When)))
+			lines = append(lines, m.row(paneCommits, "> "+clip(line, w-4), i == m.cursors[paneCommits]))
+		}
+		if len(lines) == 0 {
+			lines = []string{dimStyle.Render("(no commits)")}
 		}
 	}
-	header := strings.Join(head, "·")
+	box, t := m.border(m.focus == paneCommits, title, w, h)
+	return box.Render(t + "\n" + listWindow(lines, m.cursors[paneCommits], h-3))
+}
 
+func (m Model) paneSessions(w, h int) string {
+	list := m.sessionsFor()
+	scope := "project"
+	if repo, ok := m.selectedRepo(); ok {
+		scope = filepath.Base(repo.Path)
+	}
+	title := clip(fmt.Sprintf("SESSIONS · %s · %d", scope, len(list)), w-8)
 	var lines []string
-	switch m.sec {
-	case sectionCommits:
-		repo, ok := m.selectedRepo()
-		if !ok {
-			header += "  " + dimStyle.Render("(no repo selected)")
-			break
-		}
-		header += "  " + dimStyle.Render(clip(repo.Branch+" @ "+filepath.Base(repo.Path), w-lipgloss.Width(header)-4))
-		if m.commitsLoading {
-			lines = []string{m.spinner.View() + " loading…"}
-			break
-		}
-		if m.commitsFor != repo.Path && len(m.commits) == 0 {
-			lines = []string{dimStyle.Render("(no commits)")}
-			break
-		}
-		for i, c := range m.commits {
-			line := fmt.Sprintf("%s %-46s %s", c.Hash, clip(c.Subject, 44),
-				dimStyle.Render(fmt.Sprintf("%s · %s", c.Author, ageStr(c.When))))
-			if i == m.cursors[sectionCommits] {
-				line = selectedStyle.Render("> " + clip(line, w-4))
-			} else {
-				line = "  " + clip(line, w-4)
-			}
-			lines = append(lines, line)
-		}
-	case sectionSessions:
-		list := m.sessionsFor()
-		repo, ok := m.selectedRepo()
-		scope := "project"
-		if ok {
-			scope = filepath.Base(repo.Path)
-		}
-		header += "  " + dimStyle.Render("("+strconv.Itoa(len(list))+" · "+scope+")")
-		for i, s := range list {
-			line := clip(s.Title, 40) + " " +
-				dimStyle.Render(fmt.Sprintf("%s · $%.2f · %s", ageStr(s.Updated), s.Cost, filepath.Base(s.Directory)))
-			if i == m.cursors[sectionSessions] {
-				line = selectedStyle.Render("> " + clip(line, w-4))
-			} else {
-				line = "  " + clip(line, w-4)
-			}
-			lines = append(lines, line)
-		}
-	default:
-		notes := m.proj().Notes
-		header += "  " + dimStyle.Render("("+strconv.Itoa(len(notes))+" · vault)")
-		for i, n := range notes {
-			line := clip(n.Rel, 46) + " " + dimStyle.Render(ageStr(n.Modified))
-			if i == m.cursors[sectionNotes] {
-				line = selectedStyle.Render("> " + clip(line, w-4))
-			} else {
-				line = "  " + clip(line, w-4)
-			}
-			lines = append(lines, line)
-		}
+	for i, s := range list {
+		line := clip(s.Title, 40) + " " +
+			dimStyle.Render(fmt.Sprintf("%s · $%.2f · %s", ageStr(s.Updated), s.Cost, filepath.Base(s.Directory)))
+		lines = append(lines, m.row(paneSessions, "> "+clip(line, w-4), i == m.cursors[paneSessions]))
 	}
 	if len(lines) == 0 {
-		lines = []string{dimStyle.Render("(nothing here)")}
+		lines = []string{dimStyle.Render("(no sessions)")}
 	}
-	content := header + "\n" + listWindow(lines, m.cursors[m.sec], h-5)
-	box, t := m.border(m.focus == paneContext, "CONTEXT", w, h)
-	return box.Render(t + "\n" + content)
+	box, t := m.border(m.focus == paneSessions, title, w, h)
+	return box.Render(t + "\n" + listWindow(lines, m.cursors[paneSessions], h-3))
+}
+
+func (m Model) paneNotes(w, h int) string {
+	notes := m.proj().Notes
+	title := clip(fmt.Sprintf("NOTES · %d", len(notes)), w-8)
+	var lines []string
+	for i, n := range notes {
+		line := clip(n.Rel, 46) + " " + dimStyle.Render(ageStr(n.Modified))
+		lines = append(lines, m.row(paneNotes, "> "+clip(line, w-4), i == m.cursors[paneNotes]))
+	}
+	if len(lines) == 0 {
+		lines = []string{dimStyle.Render("(no notes)")}
+	}
+	box, t := m.border(m.focus == paneNotes, title, w, h)
+	return box.Render(t + "\n" + listWindow(lines, m.cursors[paneNotes], h-3))
+}
+
+// row paints the selection marker for a pane's own list: a selected row in
+// a focused pane is the bright cursor; in an unfocused pane it stays
+// marked, quietly (bold, no color), so "> " survives a tab away.
+func (m Model) row(p paneFocus, text string, selected bool) string {
+	if !selected {
+		return "  " + strings.TrimPrefix(text, "> ")
+	}
+	if m.focus == p {
+		return selectedStyle.Render(text)
+	}
+	return boldStyle.Render(text)
 }
 
 func (m Model) statusLine() string {

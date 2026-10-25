@@ -79,7 +79,12 @@ o.bind("SUPER + M", "Projects",
 `~/.config/hypr/looknfeel.lua`:
 
 ```lua
-o.window({ class = "^ei-projects$" }, { float = true, center = true, size = { "80%", "80%" } })
+-- Hyprland >=0.56 wants expressions for sizes: "80%" is silently ignored.
+o.window({ class = "^ei-projects$" }, {
+  float = true,
+  center = true,
+  size = { "(monitor_w*0.8)", "(monitor_h*0.8)" },
+})
 ```
 
 `o.launch_sole` focuses the existing window instead of stacking a second

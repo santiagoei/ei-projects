@@ -35,13 +35,13 @@ degrade the UI instead of failing it.
 
 ```
 ╭─ PROJECTS · 4 ──────────╮╭─ OPEN IN · repo · main · dirty 3 ──────╮
-│> 1 obsidian    (1)      ││g lazygit · t terminal · c code · a …   │
-│  2 omarchy     (1)      │╰────────────────────────────────────────╯
-│  3 uh.humance.app       │╭─ COMMITS · main · 15 ──────────────────╮
-│  4 icampus.fei.org      ││> 97d5fe3 Move files    santiago · 10m  │
+│> 1 xxxx    (1)          ││g lazygit · t terminal · c code · a …   │
+│  2 xxxx     (1)         │╰────────────────────────────────────────╯
+│  3 xxxx                 │╭─ COMMITS · main · 15 ──────────────────╮
+│  4 xxxx                 ││> 97d5fe3 Move files    santiago · 10m  │
 ╰─────────────────────────╯│  82cde26 Audit +     santiago · 1h     │
 ╭─ REPOSITORIES · proj ───╮╰────────────────────────────────────────╯
-│> moodle405   ↑2         │╭─ SESSIONS · repo · 20 ─────────────────╮
+│> xxxxxxxxx   ↑2         │╭─ SESSIONS · repo · 20 ─────────────────╮
 ╰─────────────────────────╯│> Auditoría y curaduría 7d · $0.10      │
                            ╰────────────────────────────────────────╯
                            ╭─ NOTES · 5 ────────────────────────────╮

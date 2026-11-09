@@ -9,6 +9,7 @@ import (
 
 	"github.com/santiagoei/ei-projects/internal/agent"
 	"github.com/santiagoei/ei-projects/internal/config"
+	"github.com/santiagoei/ei-projects/internal/env"
 	"github.com/santiagoei/ei-projects/internal/gitx"
 	"github.com/santiagoei/ei-projects/internal/scan"
 	"github.com/santiagoei/ei-projects/internal/vault"
@@ -197,6 +198,39 @@ func TestEnvPaneLifecycle(t *testing.T) {
 	// and the frame still fits
 	if n := strings.Count(m.View(), "\n") + 1; n > 39 {
 		t.Fatalf("env view too tall: %d", n)
+	}
+}
+
+// The ENV pane re-reads compose state on a tick, silently (no spinner, the
+// list stays), and its docker keys replace the legend while it is focused.
+func TestEnvPaneRefreshesAndShowsKeys(t *testing.T) {
+	rep := testReport()
+	rep.Projects[1].EnvDir = "/p/icampus.fei.org"
+	rep.Projects[1].EnvFile = "/p/icampus.fei.org/docker-compose.yml"
+
+	m := New(&config.Config{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: rep})
+	m.selectProject(1)
+	m = drive(t, m, envDoneMsg{file: rep.Projects[1].EnvFile,
+		services: []env.Service{{Name: "web", State: "running"}}})
+	m = drive(t, m, tea.KeyMsg{Type: tea.KeyTab}, tea.KeyMsg{Type: tea.KeyTab})
+
+	if l := m.legend(); !strings.Contains(l, "restart") || !strings.Contains(l, "stop") {
+		t.Fatalf("env legend missing docker keys: %q", l)
+	}
+
+	m = drive(t, m, envTickMsg{})
+	if !m.envLoading || len(m.envSvcs) != 1 {
+		t.Fatalf("tick should refresh silently: loading=%v svcs=%d", m.envLoading, len(m.envSvcs))
+	}
+	if strings.Contains(m.paneEnv(m.geom()), "docker compose ps") {
+		t.Fatal("background refresh must not show the first-load spinner")
+	}
+	m = drive(t, m, envDoneMsg{file: rep.Projects[1].EnvFile,
+		services: []env.Service{{Name: "web", State: "exited"}}})
+	if m.envLoading || m.envSvcs[0].State != "exited" {
+		t.Fatalf("refresh result not applied: %+v", m.envSvcs)
 	}
 }
 

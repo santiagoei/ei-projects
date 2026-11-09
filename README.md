@@ -101,6 +101,7 @@ meanings: `r` restarts, it does not rescan; `d` scales down):
 | key   | action (opens a terminal, on the selected service)   |
 |-------|------------------------------------------------------|
 | `u`   | `docker compose up -d`                               |
+| `s`   | `docker compose stop` (selected service, or all)     |
 | `d`   | `docker compose down`                                |
 | `r`   | restart                                              |
 | `l`   | logs (follow)                                        |

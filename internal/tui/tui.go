@@ -108,7 +108,7 @@ func New(cfg *config.Config) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.scanCmd(), m.spinner.Tick)
+	return tea.Batch(m.scanCmd(), m.spinner.Tick, envTick())
 }
 
 func (m Model) scanCmd() tea.Cmd {
@@ -187,12 +187,26 @@ func (m *Model) envCmd() tea.Cmd {
 	}
 	path := p.EnvFile
 	m.envFor, m.envFetched, m.envLoading, m.envErr = path, false, true, ""
+	return envFetch(path)
+}
+
+func envFetch(path string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), env.StatusTimeout+2*time.Second)
 		defer cancel()
 		svcs, err := env.Status(ctx, path)
 		return envDoneMsg{file: path, services: svcs, err: err}
 	}
+}
+
+// envRefresh is how often the ENV pane re-reads compose state, so a
+// container that stops or starts shows up without a keypress.
+const envRefresh = 5 * time.Second
+
+type envTickMsg struct{}
+
+func envTick() tea.Cmd {
+	return tea.Tick(envRefresh, func(time.Time) tea.Msg { return envTickMsg{} })
 }
 
 // focusOrder is the tab order, which only includes the ENV pane while the
@@ -402,6 +416,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cursors[paneEnv] = clamp(m.cursors[paneEnv], 0, len(m.envSvcs)-1)
 		return m, m.tickIfBusy()
 
+	case envTickMsg:
+		if p := m.proj(); p.EnvFile != "" && m.envFetched && !m.envLoading && env.Available() {
+			m.envLoading = true
+			return m, tea.Batch(envTick(), envFetch(p.EnvFile))
+		}
+		return m, envTick()
+
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -524,6 +545,11 @@ func (m *Model) envAction(key string) bool {
 	switch key {
 	case "u":
 		args = []string{"up", "-d"}
+	case "s":
+		args = []string{"stop"}
+		if svc != "" {
+			args = append(args, svc)
+		}
 	case "d":
 		args = []string{"down"}
 	case "r":
@@ -842,6 +868,19 @@ func (m Model) legend() string {
 		{"r", "rescan"},
 		{"q", "quit"},
 	}
+	if m.focus == paneEnv {
+		keys = []struct{ key, label string }{
+			{"u", "up"},
+			{"s", "stop"},
+			{"d", "down"},
+			{"r", "restart"},
+			{"l", "logs"},
+			{"x", "shell"},
+			{"tab", "panes"},
+			{"?", "help"},
+			{"q", "quit"},
+		}
+	}
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		parts = append(parts, keyStyle(k.key)+dim(" "+k.label))
@@ -1063,7 +1102,7 @@ func (m Model) paneEnv(g geom) string {
 	inner := w - 4
 	var lines []string
 	switch {
-	case m.envLoading:
+	case m.envLoading && !m.envFetched:
 		lines = []string{m.spinner.View() + dim(" docker compose ps…")}
 	case m.envErr != "":
 		lines = []string{red("✗ ") + dim(clip(m.envErr, inner-2))}
@@ -1178,8 +1217,8 @@ func (m Model) helpView() string {
 		"  " + keyStyle("s") + " " + dim("resume session    ") + keyStyle("d") + dim(" open note    ") +
 			keyStyle("enter") + dim(" commits: copy sha · sessions: resume · notes: open"),
 		accent("env · docker compose"),
-		"  " + keyStyle("u") + dim(" up    ") + keyStyle("d") + dim(" down    ") +
-			keyStyle("r") + dim(" restart    ") + keyStyle("l") + dim(" logs    ") +
+		"  " + keyStyle("u") + dim(" up    ") + keyStyle("s") + dim(" stop    ") +
+			keyStyle("d") + dim(" down    ") + keyStyle("r") + dim(" restart    ") + keyStyle("l") + dim(" logs    ") +
 			keyStyle("x") + dim(" shell — in a terminal, on the selected service"),
 		accent("app"),
 		"  " + keyStyle("r") + dim(" rescan    ") + keyStyle("?") + dim(" this help    ") + keyStyle("q") + dim(" quit"),
@@ -1207,7 +1246,7 @@ func (m Model) statusLine() string {
 		left = dim(clip(shortPath(m.proj().Path), m.width/2))
 	}
 	right := ""
-	if m.loading || m.commitsLoading || m.envLoading {
+	if m.loading || m.commitsLoading || (m.envLoading && !m.envFetched) {
 		right = m.spinner.View()
 	} else if !m.scannedAt.IsZero() {
 		age := shortAge(m.scannedAt)

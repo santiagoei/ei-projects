@@ -5,8 +5,10 @@
 package actions
 
 import (
+	"encoding/json"
 	"os/exec"
 	"syscall"
+	"time"
 )
 
 // start fires the command detached (its own session) so it outlives the TUI
@@ -17,25 +19,65 @@ func start(name string, args ...string) error {
 	return cmd.Start()
 }
 
+// launch is start for anything that opens a window. Hyprland focuses every
+// new window, which would pull the keyboard away from the cockpit; so once
+// the window count grows, the cockpit takes focus back.
+func launch(name string, args ...string) error {
+	before := windowCount()
+	if err := start(name, args...); err != nil {
+		return err
+	}
+	if before >= 0 {
+		go refocusCockpit(before)
+	}
+	return nil
+}
+
+// windowCount is the number of Hyprland clients, or -1 when there is no
+// Hyprland to ask (then nothing is refocused).
+func windowCount() int {
+	out, err := exec.Command("hyprctl", "-j", "clients").Output()
+	if err != nil {
+		return -1
+	}
+	var clients []json.RawMessage
+	if err := json.Unmarshal(out, &clients); err != nil {
+		return -1
+	}
+	return len(clients)
+}
+
+func refocusCockpit(before int) {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		if n := windowCount(); n > before {
+			time.Sleep(100 * time.Millisecond) // let the new window take its focus first
+			exec.Command("hyprctl", "dispatch", `hl.dsp.focus({ window = "class:^ei-projects$" })`).Run()
+			return
+		}
+	}
+}
+
 func Lazygit(path string) error {
-	return start("omarchy-launch-tui", "lazygit", "-p", path)
+	return launch("omarchy-launch-tui", "lazygit", "-p", path)
 }
 
 func Terminal(dir string) error {
-	return start("uwsm-app", "--", "xdg-terminal-exec", "--dir="+dir)
+	return launch("uwsm-app", "--", "xdg-terminal-exec", "--dir="+dir)
 }
 
 func Editor(path string) error {
-	return start("omarchy-launch-editor", path)
+	return launch("omarchy-launch-editor", path)
 }
 
 func Agent(dir string) error {
-	return start("uwsm-app", "--", "xdg-terminal-exec", "--dir="+dir,
+	return launch("uwsm-app", "--", "xdg-terminal-exec", "--dir="+dir,
 		"-e", "omarchy-agent", "--inline")
 }
 
 func Explore(dir string) error {
-	return start("uwsm-app", "--", "xdg-open", dir)
+	return launch("uwsm-app", "--", "xdg-open", dir)
 }
 
 // Compose opens a terminal already cd'd into the environment and runs the
@@ -44,11 +86,11 @@ func Explore(dir string) error {
 func Compose(dir, file string, args ...string) error {
 	full := append([]string{"--", "xdg-terminal-exec", "--dir=" + dir,
 		"-e", "docker", "compose", "-f", file}, args...)
-	return start("uwsm-app", full...)
+	return launch("uwsm-app", full...)
 }
 
 func OpenFile(path string) error {
-	return start("uwsm-app", "--", "xdg-open", path)
+	return launch("uwsm-app", "--", "xdg-open", path)
 }
 
 func Copy(path string) error {
@@ -58,6 +100,6 @@ func Copy(path string) error {
 // ResumeSession reopens an opencode session in a terminal over the directory
 // it was started in: the same jump omarchy-agent-sessions performs.
 func ResumeSession(dir, id string) error {
-	return start("uwsm-app", "--", "xdg-terminal-exec", "--dir="+dir,
+	return launch("uwsm-app", "--", "xdg-terminal-exec", "--dir="+dir,
 		"-e", "opencode", "--auto", "--session", id)
 }

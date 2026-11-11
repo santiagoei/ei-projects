@@ -53,7 +53,9 @@ tab/h/l panes · ↑/↓ move · enter act · 1-9 project · s session · d note
 
 The legend along the bottom is conditional: `pgup/dn · home/end` appear only
 while the focused pane has more rows than it can paint, and the ENV pane's
-compose verbs replace the whole bar while it holds focus.
+compose verbs replace the whole bar while it holds focus. A list that cannot
+show every row grows a thumb down its right edge, so "3 of 20" never looks
+like "there are only 3".
 
 Six focusable panes — projects, repos, the conditional **ENV** (shown
 only while the selected project has a docker environment), commits,
@@ -69,9 +71,12 @@ the hovered list. `?` opens the full help.
 Colours come from the active Omarchy theme
 (`~/.local/state/omarchy/current/theme/colors.toml`): the accent paints
 the active pane's border and the selected-row bar is the theme's own
-selection colour, so the cockpit reads as part of the desktop. The last
-project/repo pair is remembered (by path) under the XDG state dir, so
-`SUPER+M` reopens where you left off.
+selection colour, so the cockpit reads as part of the desktop. `T` reads
+that file again after `omarchy theme set`, along with the configured
+default agent, so neither needs a restart. The last seat is remembered
+under the XDG state dir — project and repo by path (not index: the watched
+list grows), the focused pane and each pane's row — so `SUPER+M` reopens
+exactly where you left off, and clamps whatever no longer fits.
 
 ## Keys
 
@@ -97,6 +102,7 @@ Navigation (the footer bar):
 | `s` / `d`   | resume the marked session / open the marked note  |
 | `1`–`9`     | jump to project N                                 |
 | `r`         | rescan                                            |
+| `T`         | reload the Omarchy theme and the default agent    |
 | `?`         | full help overlay                                 |
 | `q`         | quit                                              |
 | mouse       | click focuses + selects a row; wheel moves the hovered list |

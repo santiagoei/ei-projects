@@ -30,9 +30,18 @@ var (
 	paletteVal  palette
 )
 
+// pal is read on the event loop only (View and Update), which is what lets
+// reloadPalette swap the value without a lock.
 func pal() palette {
 	paletteOnce.Do(func() { paletteVal = loadPalette() })
 	return paletteVal
+}
+
+// reloadPalette re-reads the Omarchy theme: `omarchy theme set` repaints the
+// desktop under a running cockpit, and a floating window that kept painting
+// the old palette until it was restarted looked broken.
+func reloadPalette() {
+	paletteVal = loadPalette()
 }
 
 func loadPalette() palette {

@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -116,6 +115,7 @@ func New(cfg *config.Config) Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(pal().accent)
+	loadDefaultAgent()
 	return Model{cfg: cfg, spinner: sp, cursors: map[paneFocus]int{}, loading: true}
 }
 
@@ -230,6 +230,18 @@ func (m Model) focusOrder() []paneFocus {
 		order = append(order[:2], append([]paneFocus{paneEnv}, order[2:]...)...)
 	}
 	return order
+}
+
+// focusVisible reports whether the focused pane is actually on screen: the
+// ENV pane exists only for a project with a compose file, and the layout drops
+// it on a short window.
+func (m Model) focusVisible() bool {
+	for _, p := range m.focusOrder() {
+		if p == m.focus {
+			return true
+		}
+	}
+	return false
 }
 
 // cycleFocus moves through the order with wraparound; a focus the order no
@@ -428,8 +440,33 @@ func (m *Model) clampCursors() {
 	m.project = clamp(m.project, 0, m.listCount(paneProjects)-1)
 	m.repo = clamp(m.repo, 0, m.listCount(paneRepos)-1)
 	for p := range paneCount {
-		m.cursors[paneFocus(p)] = m.cursorFor(paneFocus(p))
+		f := paneFocus(p)
+		if !m.feedReady(f) {
+			continue
+		}
+		m.cursors[f] = m.cursorFor(f)
 	}
+}
+
+// feedReady is whether a pane has the rows it will show yet. The repo's
+// history and the compose state arrive after the scan, so clamping their
+// cursors at scan time would park them on row zero and throw away the row the
+// user was reading in the previous run; the clamp runs again when the feed
+// lands. A pane with nothing on its way (no repository, or a refresh that kept
+// its list) is settled and gets clamped now.
+func (m Model) feedReady(p paneFocus) bool {
+	switch p {
+	case paneCommits:
+		// with no repository selected nothing is coming; with one, the
+		// history is still on its way and its rows cannot be counted yet
+		repo, ok := m.selectedRepo()
+		return !ok || m.commitsFor == repo.Path
+	case paneEnv:
+		// a background refresh keeps the rows it already had; the first read
+		// of a compose file has nothing to stand on
+		return !m.envLoading || m.envFetched
+	}
+	return true
 }
 
 // selectByPath parks the selection on the project/repo pair remembered from
@@ -457,7 +494,7 @@ func (m *Model) selectByPath(projectPath, repoPath string) {
 // sessions) and refresh every feed that hangs off the selection -- history,
 // the selected session's todos, the compose state.
 func (m *Model) commitSelection() tea.Cmd {
-	m.persistSelection()
+	m.persist()
 	return tea.Batch(m.commitsCmd(), m.todosCmd(), m.envCmd())
 }
 
@@ -491,8 +528,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scannedAt = time.Now()
 		if !m.restored {
 			m.restored = true
-			if p, r := loadSelection(); p != "" {
-				m.selectByPath(p, r)
+			s := loadState()
+			if s.Project != "" {
+				m.selectByPath(s.Project, s.Repo)
+				m.restoreCursors(s)
 			}
 		}
 		return m, m.afterSelection()
@@ -580,7 +619,7 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch key {
 	case "q", "ctrl+c":
-		return m, tea.Quit
+		return m, m.quit()
 	case "?":
 		m.help = true
 		return m, nil
@@ -595,7 +634,7 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "shift+tab", "h", "left", "esc":
 		if m.focus == paneProjects && key == "esc" {
-			return m, tea.Quit
+			return m, m.quit()
 		}
 		m.cycleFocus(-1)
 		return m, nil
@@ -616,6 +655,14 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// force every on-demand feed to refetch after the rescan
 		m.commitsFor, m.todosFor, m.envFetched = "", "", false
 		return m, tea.Batch(m.setStatus("rescanning…"), m.scanCmd(), m.spinner.Tick)
+	case "T":
+		// the Omarchy theme is a file the desktop rewrites under a running
+		// cockpit; so is the default agent. Reload both, and the spinner's
+		// colour with them -- it captured the palette at construction.
+		reloadPalette()
+		loadDefaultAgent()
+		m.spinner.Style = lipgloss.NewStyle().Foreground(pal().accent)
+		return m, m.setStatus("theme reloaded")
 	}
 
 	// Project jump digits: global, like lazygit's global keys. The digit is a
@@ -899,6 +946,14 @@ func (m *Model) reported(err error, what, target string) tea.Cmd {
 	return m.setStatus(fmt.Sprintf("%s: %s", what, filepath.Base(target)))
 }
 
+// quit writes the state one last time on the way out: the last thing a user
+// did was usually move a cursor inside a pane, which is not a change of
+// selection and so never triggered the save on its own.
+func (m *Model) quit() tea.Cmd {
+	m.persist()
+	return tea.Quit
+}
+
 // -------------------------------------------------------------- feed errors
 
 // feedMsg is why a feed is quiet for the selected project, and whether that
@@ -1142,7 +1197,7 @@ func (m Model) paneProjects(g geom) string {
 		lines = []string{dim("(no projects)")}
 	}
 	return pane(m.focus == paneProjects, fmt.Sprintf("PROJECTS · %d", len(m.report.Projects)), w, h,
-		listWindow(lines, m.project, h-2))
+		listWindow(lines, m.project, h-2, inner))
 }
 
 // repoState is the coloured status suffix for one repository. The widest
@@ -1185,7 +1240,7 @@ func (m Model) paneRepos(g geom) string {
 	if n := m.proj().Name; n != "" {
 		title += " · " + n
 	}
-	return pane(m.focus == paneRepos, title, w, h, listWindow(lines, m.repo, h-2))
+	return pane(m.focus == paneRepos, title, w, h, listWindow(lines, m.repo, h-2, inner))
 }
 
 // openInParts is the launcher list: the git-status row menu's keys, same
@@ -1247,27 +1302,24 @@ func (m Model) openInTitle(w int) string {
 	return clip(title, w-6)
 }
 
-var (
-	agentOnce  sync.Once
-	agentCache string
-)
+var agentCache string
 
 // defaultAgent mirrors what the bar panel shows: omarchy stores the
-// configured agent name in a plain file. Read once; the cockpit does not
-// need to notice a mid-session "omarchy default agent" change.
-func defaultAgent() string {
-	agentOnce.Do(func() {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return
-		}
-		data, err := os.ReadFile(filepath.Join(home, ".config", "omarchy", "defaults", "agent"))
-		if err != nil {
-			return
-		}
-		agentCache = strings.TrimSpace(string(data))
-	})
-	return agentCache
+// configured agent name in a plain file. The launcher label has to agree with
+// the agent that will actually start, so the file is read again when the
+// cockpit reloads its theme.
+func defaultAgent() string { return agentCache }
+
+func loadDefaultAgent() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".config", "omarchy", "defaults", "agent"))
+	if err != nil {
+		return
+	}
+	agentCache = strings.TrimSpace(string(data))
 }
 
 // paneEnv lists the selected project's compose services with their state;
@@ -1316,7 +1368,7 @@ func (m Model) paneEnv(g geom) string {
 		}
 	}
 	return pane(m.focus == paneEnv, clip(title, w-6), w, h,
-		listWindow(lines, m.cursors[paneEnv], h-2))
+		listWindow(lines, m.cursors[paneEnv], h-2, inner))
 }
 
 func (m Model) paneCommits(g geom) string {
@@ -1346,7 +1398,7 @@ func (m Model) paneCommits(g geom) string {
 		}
 	}
 	return pane(m.focus == paneCommits, title, w, h,
-		listWindow(lines, m.cursors[paneCommits], h-2))
+		listWindow(lines, m.cursors[paneCommits], h-2, inner))
 }
 
 // emptyNote explains an empty pane: the feed's reason when there is one
@@ -1386,7 +1438,7 @@ func (m Model) paneSessions(g geom) string {
 		lines = []string{m.emptyNote(paneSessions, "(no sessions)", inner)}
 	}
 	return pane(m.focus == paneSessions, title, w, h,
-		listWindow(lines, m.cursors[paneSessions], h-2))
+		listWindow(lines, m.cursors[paneSessions], h-2, inner))
 }
 
 func (m Model) paneNotes(g geom) string {
@@ -1405,7 +1457,7 @@ func (m Model) paneNotes(g geom) string {
 		lines = []string{m.emptyNote(paneNotes, "(no notes)", inner)}
 	}
 	return pane(m.focus == paneNotes, title, w, h,
-		listWindow(lines, m.cursors[paneNotes], h-2))
+		listWindow(lines, m.cursors[paneNotes], h-2, inner))
 }
 
 func (m Model) helpView() string {
@@ -1431,7 +1483,8 @@ func (m Model) helpView() string {
 			keyStyle("d") + dim(" down    ") + keyStyle("r") + dim(" restart    ") + keyStyle("l") + dim(" logs    ") +
 			keyStyle("x") + dim(" shell — in a terminal, on the selected service"),
 		accent("app"),
-		"  " + keyStyle("r") + dim(" rescan    ") + keyStyle("?") + dim(" this help    ") + keyStyle("q") + dim(" quit"),
+		"  " + keyStyle("r") + dim(" rescan    ") + keyStyle("T") + dim(" reload theme and agent    ") +
+			keyStyle("?") + dim(" this help    ") + keyStyle("q") + dim(" quit"),
 	}
 	innerW := min(m.width-8, 96)
 	body := strings.Join(rows, "\n")
@@ -1512,8 +1565,14 @@ func (m Model) todosLine() string {
 	return head + " " + strings.Join(parts, " · ")
 }
 
-// listWindow shows items around the selected index, clipping to innerH rows.
-func listWindow(items []string, sel, innerH int) string {
+// listWindow shows items around the selected index, clipping to innerH rows,
+// and marks the cut: a list pane is a few rows tall, and without a thumb on
+// its right edge "3 of 20" and "there are only 3" paint identically.
+//
+// rowW is the width the rows were built to; the strip is padded to it and
+// appended, so a gutter appears inside the frame's existing slack instead of
+// stealing a column from every row.
+func listWindow(items []string, sel, innerH, rowW int) string {
 	if innerH <= 0 || len(items) == 0 {
 		if len(items) == 0 {
 			return ""
@@ -1525,7 +1584,40 @@ func listWindow(items []string, sel, innerH int) string {
 	if end > len(items) {
 		end = len(items)
 	}
-	return strings.Join(items[start:end], "\n")
+	shown := items[start:end]
+	if len(items) <= innerH {
+		return strings.Join(shown, "\n")
+	}
+	gutter := scrollBar(len(items), start, innerH)
+	out := make([]string, len(shown))
+	for i := range shown {
+		out[i] = padR(shown[i], rowW) + gutter[i]
+	}
+	return strings.Join(out, "\n")
+}
+
+// scrollBar is the thumb on a clipped list: one column tall as the pane, with
+// the visible window drawn as its own position inside the whole. The thumb
+// scales with how much of the list is on screen, so a pane showing half of it
+// says so with a fat bar and a pane showing a tenth with a sliver.
+func scrollBar(total, start, visible int) []string {
+	track := make([]string, visible)
+	for i := range track {
+		track[i] = dim("│")
+	}
+	thumb := visible * visible / total
+	if thumb < 1 {
+		thumb = 1
+	}
+	pos := 0
+	if span := total - visible; span > 0 {
+		pos = start * (visible - thumb) / span
+	}
+	hot := lipgloss.NewStyle().Bold(true).Foreground(pal().accent)
+	for i := pos; i < pos+thumb && i < visible; i++ {
+		track[i] = hot.Render("┃")
+	}
+	return track
 }
 
 // -------------------------------------------------------------- helpers

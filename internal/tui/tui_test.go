@@ -2,11 +2,14 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/santiagoei/ei-projects/internal/agent"
 	"github.com/santiagoei/ei-projects/internal/config"
@@ -139,7 +142,8 @@ func TestMouseClickSelectsRow(t *testing.T) {
 	}
 }
 
-// The selection round-trips through the state file by path.
+// The whole seat round-trips through the state file: the project/repo pair by
+// path, and the pane holding focus with the row each pane was standing on.
 func TestSelectionPersistsByPath(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", dir)
@@ -148,19 +152,69 @@ func TestSelectionPersistsByPath(t *testing.T) {
 	m = drive(t, m, scanDoneMsg{report: testReport()})
 	m.selectProject(1)
 	m.repo = 2
-	m.persistSelection()
+	m.focus = paneSessions
+	m.cursors[paneSessions] = 1
+	m.persist()
 
-	p, r := loadSelection()
-	if p != "/p/icampus.fei.org" || r != "/p/moodle405" {
-		t.Fatalf("roundtrip: %q %q", p, r)
+	s := loadState()
+	if s.Project != "/p/icampus.fei.org" || s.Repo != "/p/moodle405" {
+		t.Fatalf("roundtrip: %+v", s)
 	}
 
-	// a fresh model restores the pair on its first scan
+	// a fresh model restores the whole seat, not just the repo
 	fresh := New(&config.Config{})
 	fresh = drive(t, fresh, tea.WindowSizeMsg{Width: 150, Height: 40})
 	fresh = drive(t, fresh, scanDoneMsg{report: testReport()})
 	if fresh.project != 1 || fresh.repo != 2 {
 		t.Fatalf("restore: project=%d repo=%d", fresh.project, fresh.repo)
+	}
+	if fresh.focus != paneSessions || fresh.cursors[paneSessions] != 1 {
+		t.Fatalf("restore: focus=%d cursors=%v", fresh.focus, fresh.cursors)
+	}
+
+	// and quitting writes the last cursor move, which is not a change of
+	// selection and so never triggered a save on its own
+	m.focus = paneNotes
+	m = drive(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	if q := loadState(); q.Cursors["notes"] == 1 {
+		t.Fatalf("a cursor move alone must not rewrite the state: %+v", q)
+	}
+	m.quit()
+	if q := loadState(); q.Focus != "notes" || q.Cursors["notes"] != 1 {
+		t.Fatalf("the quit path must save the last move: %+v", loadState())
+	}
+}
+
+// A restored seat that no longer fits the world it lands in is clamped, not
+// trusted: a pane that does not exist any more cannot hold focus, and a row
+// past the end of a shorter list cannot be stood on.
+func TestPersistedStateClampsToWhatExists(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", dir)
+
+	rep := testReport()
+	rep.Projects[1].EnvFile = "/p/icampus.fei.org/docker-compose.yml"
+	m := New(&config.Config{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: rep})
+	m.selectProject(1)
+	m.focus = paneEnv
+	m.cursors[paneSessions] = 9 // the fixture has two
+	m.cursors[paneNotes] = 9
+	m.persist()
+
+	fresh := New(&config.Config{})
+	fresh = drive(t, fresh, tea.WindowSizeMsg{Width: 150, Height: 40})
+	// the same project, no compose file this time: the ENV pane is not painted
+	fresh = drive(t, fresh, scanDoneMsg{report: testReport()})
+	if fresh.focus != paneProjects {
+		t.Fatalf("focus restored onto a pane that is not on screen: %d", fresh.focus)
+	}
+	if got := fresh.cursors[paneSessions]; got != 1 {
+		t.Fatalf("sessions cursor past the end: %d", got)
+	}
+	if got := fresh.cursors[paneNotes]; got != 1 {
+		t.Fatalf("notes cursor past the end: %d", got)
 	}
 }
 
@@ -428,6 +482,153 @@ func TestPageKeysMoveByVisibleRows(t *testing.T) {
 	}
 	if m.cursors[paneCommits] != 0 {
 		t.Fatalf("empty pane moved: %d", m.cursors[paneCommits])
+	}
+}
+
+// A clipped list marks the cut: the rows grow by exactly the gutter column,
+// stay the same width as each other, and a list that fits grows by nothing.
+func TestScrollbarMarksTheCut(t *testing.T) {
+	items := make([]string, 20)
+	for i := range items {
+		items[i] = fmt.Sprintf("row %d", i)
+	}
+
+	rows := strings.Split(listWindow(items, 0, 5, 12), "\n")
+	if len(rows) != 5 {
+		t.Fatalf("window height: %d rows", len(rows))
+	}
+	for i, line := range rows {
+		if w := lipgloss.Width(line); w != 13 {
+			t.Fatalf("row %d is %d wide with the gutter, want 13: %q", i, w, line)
+		}
+	}
+	if thumbs := strings.Count(strings.Join(rows, "\n"), "┃"); thumbs < 1 {
+		t.Fatalf("no thumb in the gutter:\n%s", strings.Join(rows, "\n"))
+	}
+
+	// the thumb follows the window down the list
+	rowOf := func(s string) int {
+		for i, line := range strings.Split(s, "\n") {
+			if strings.Contains(line, "┃") {
+				return i
+			}
+		}
+		return -1
+	}
+	top, bottom := rowOf(listWindow(items, 0, 5, 12)), rowOf(listWindow(items, 19, 5, 12))
+	if top < 0 || bottom < 0 || top >= bottom {
+		t.Fatalf("the thumb stayed put: row %d at the top, row %d at the end", top, bottom)
+	}
+
+	// a list that fits needs no gutter, and its rows keep their own width
+	fits := strings.Split(listWindow(items[:3], 0, 5, 12), "\n")
+	if len(fits) != 3 || strings.Contains(fits[0], "┃") || strings.Contains(fits[0], "│") {
+		t.Fatalf("an unclipped pane grew a gutter: %q", fits[0])
+	}
+	// an empty pane paints nothing
+	if got := listWindow(nil, 0, 5, 12); got != "" {
+		t.Fatalf("empty list: %q", got)
+	}
+}
+
+// An action's echo leaves on its own: the status line is shared with the
+// session todos and the feed note, and it used to sit there until the next
+// pane cycle hid them both. The expiry tick carries the generation of the
+// line that armed it, so a slow tick cannot wipe a newer message.
+func TestStatusExpires(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	m := New(&config.Config{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: testReport()})
+
+	m.setStatus("lazygit: moodle405")
+	stale := m.statusGen
+	m.setStatus("copy: /p/moodle405")
+	if m.statusGen == stale {
+		t.Fatal("setStatus must count the lines it writes")
+	}
+	m = drive(t, m, statusExpireMsg{gen: stale})
+	if m.status != "copy: /p/moodle405" {
+		t.Fatalf("a stale tick wiped the newer line: %q", m.status)
+	}
+	m = drive(t, m, statusExpireMsg{gen: m.statusGen})
+	if m.status != "" {
+		t.Fatalf("the line never expired: %q", m.status)
+	}
+	// with nothing to show, the status falls back to the project path
+	if got := m.statusLine(); !strings.Contains(got, "obsidian") {
+		t.Fatalf("the path vanished from the status: %q", got)
+	}
+}
+
+// The theme and the default agent are files the desktop rewrites under a
+// running cockpit: they are read again on T, and not before.
+func TestThemeAndAgentReload(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	writeTheme(t, state, "#ff0000")
+	if err := os.MkdirAll(filepath.Join(home, ".config", "omarchy", "defaults"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "omarchy", "defaults", "agent"),
+		[]byte("opencode\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reloadPalette()
+	loadDefaultAgent()
+	if got := pal().accent; got != lipgloss.Color("#ff0000") {
+		t.Fatalf("accent from the theme: %q", got)
+	}
+	if defaultAgent() != "opencode" {
+		t.Fatalf("agent: %q", defaultAgent())
+	}
+
+	// omarchy changed the theme and the agent underneath: nothing notices on
+	// its own, and the model was built before the change
+	m := New(&config.Config{})
+	writeTheme(t, state, "#00ff00")
+	if err := os.WriteFile(filepath.Join(home, ".config", "omarchy", "defaults", "agent"),
+		[]byte("claude\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := pal().accent; got != lipgloss.Color("#ff0000") {
+		t.Fatal("the palette moved without being asked")
+	}
+	if defaultAgent() != "opencode" {
+		t.Fatal("the agent name moved without being asked")
+	}
+
+	m = drive(t, m,
+		tea.WindowSizeMsg{Width: 150, Height: 40},
+		tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("T")})
+	if got := pal().accent; got != lipgloss.Color("#00ff00") {
+		t.Fatalf("T did not reload the theme: %q", got)
+	}
+	if defaultAgent() != "claude" {
+		t.Fatalf("T did not reload the agent: %q", defaultAgent())
+	}
+	body, _ := openInBody(120)
+	if !strings.Contains(body, "claude") {
+		t.Fatal("the launcher still names the old agent")
+	}
+	if !strings.Contains(m.status, "theme") {
+		t.Fatalf("T gave no feedback: %q", m.status)
+	}
+}
+
+// writeTheme drops an Omarchy colors.toml at the state path the palette reads.
+func writeTheme(t *testing.T, state, accent string) {
+	t.Helper()
+	dir := filepath.Join(state, "omarchy", "current", "theme")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "accent = \"" + accent + "\"\nforeground = \"#dddddd\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "colors.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

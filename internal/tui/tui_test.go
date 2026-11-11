@@ -398,6 +398,77 @@ func TestKeysActOnTheSelectedRow(t *testing.T) {
 	}
 }
 
+// The compose verbs go to a terminal, on the service the cursor holds, and
+// every one of them names the file that was detected rather than a default.
+func TestComposeVerbs(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	got := captureActions(t)
+	rep := testReport()
+	rep.Projects[1].EnvDir = "/p/icampus.fei.org"
+	rep.Projects[1].EnvFile = "/p/icampus.fei.org/compose.yaml"
+	m := New(&config.Config{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: rep})
+	m.selectProject(1)
+	m.envSvcs = []env.Service{
+		{Name: "web", State: "running", Image: "feicampus45-webserver", Ports: "8080→80"},
+		{Name: "db", State: "exited", Image: "mariadb:11.4", Exit: 137},
+	}
+	m.focus = paneEnv
+	key := func(k string) tea.Msg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)} }
+
+	for _, tc := range []struct{ key, want string }{
+		{"u", "up -d"}, // the whole environment, no service
+		{"s", "stop web"},
+		{"d", "down"},
+		{"b", "build web"},
+		{"p", "pull web"},
+		{"k", "kill web"},
+		{"l", "logs -f web"},
+		{"x", "exec web sh"},
+	} {
+		m.cursors[paneEnv] = 0
+		m = drive(t, m, key(tc.key))
+		if c := lastCmd(t, got); !strings.Contains(c, "-f /p/icampus.fei.org/compose.yaml "+tc.want) {
+			t.Fatalf("%s: %q, want ...%s", tc.key, c, tc.want)
+		}
+	}
+
+	// enter is the same verb as l: following logs cannot break anything
+	m.cursors[paneEnv] = 1
+	m = drive(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if c := lastCmd(t, got); !strings.Contains(c, "logs -f db") {
+		t.Fatalf("enter: %q", c)
+	}
+	// the rows carry what the pane knows: published ports beat the image
+	body := m.paneEnv(m.geom())
+	if !strings.Contains(body, "8080→80") {
+		t.Fatalf("no ports in the rows:\n%s", body)
+	}
+	if !strings.Contains(body, "mariadb:11.4") {
+		t.Fatalf("no image for the service with no ports:\n%s", body)
+	}
+	// a service name, an image and a port are all searchable
+	m.cursors[paneEnv] = 0
+	m = drive(t, m, key("/"), key("8080"))
+	if n := m.listCount(paneEnv); n != 1 {
+		t.Fatalf("filter by port: %d rows", n)
+	}
+	m = drive(t, m, tea.KeyMsg{Type: tea.KeyEscape}, tea.KeyMsg{Type: tea.KeyEscape})
+	// and verbs that need a service say so instead of acting on nothing
+	// (the second esc walked the focus off the ENV pane, as it should)
+	m.focus = paneEnv
+	m.envSvcs = nil
+	m = drive(t, m, key("r"))
+	if !strings.Contains(m.status, "no service") {
+		t.Fatalf("restart with nothing selected: %q", m.status)
+	}
+	// the legend shows the docker verbs while the pane holds focus
+	if l := m.legend(); !strings.Contains(l, "build") || !strings.Contains(l, "kill") {
+		t.Fatalf("the env legend is missing its new keys: %q", l)
+	}
+}
+
 // A broken feed announces itself: a warning in the pane title, the reason in
 // the status line while that pane holds focus, and an empty list that
 // explains why it is empty instead of looking dead. A feed that merely has
@@ -1056,6 +1127,18 @@ func TestProjectRowsAndActiveBorder(t *testing.T) {
 	}
 	if !strings.Contains(body, "missing") || !strings.Contains(body, "—") {
 		t.Fatalf("a missing or empty project lost its badge:\n%s", body)
+	}
+	// a project with a docker environment is marked without asking docker:
+	// the compose file is on disk, and a subprocess per project per scan is
+	// not a price the list is worth
+	withEnv := scan.Report{Projects: []scan.Project{
+		{Name: "fei", Path: "/p/fei", EnvFile: "/p/fei/compose.yaml",
+			Repos: []gitx.Repo{{Path: "/p/fei/moodle", Branch: "main"}}},
+	}}
+	em := drive(t, New(&config.Config{}), tea.WindowSizeMsg{Width: 150, Height: 40})
+	em = drive(t, em, scanDoneMsg{report: withEnv})
+	if e := em.paneProjects(em.geom()); !strings.Contains(e, "⎈") {
+		t.Fatalf("no compose marker:\n%s", e)
 	}
 	// the pending total moved from the row to the title
 	if !strings.Contains(body, "PROJECTS · 3") || !strings.Contains(body, "●2") {

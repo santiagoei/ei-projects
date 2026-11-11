@@ -158,9 +158,19 @@ meanings: `r` restarts, it does not rescan; `d` scales down):
 | `u`   | `docker compose up -d`                               |
 | `s`   | `docker compose stop` (selected service, or all)     |
 | `d`   | `docker compose down`                                |
-| `r`   | restart                                              |
-| `l`   | logs (follow)                                        |
-| `x`   | shell (`exec … sh`)                                  |
+| `r`   | restart (needs a service)                            |
+| `l` `enter` | logs, following                                |
+| `x`   | shell (`exec … sh`, needs a service)                 |
+| `b`   | build                                                |
+| `p`   | pull                                                 |
+| `k`   | kill                                                 |
+
+`enter` is logs because it is the one compose verb that cannot break
+anything, and it is the one reached for most. Rows show the published ports
+(`8080→80`) while a service is up and its image otherwise, and both are
+searchable with `/`. A project row carries `⎈` when a compose file was found
+next to it — the file is on disk, so that costs no subprocess; asking docker
+for every project on every scan would.
 
 ## Install
 

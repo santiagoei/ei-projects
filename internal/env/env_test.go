@@ -65,3 +65,35 @@ func TestParsePsBothShapes(t *testing.T) {
 		t.Fatalf("empty output must be no services: %+v", got)
 	}
 }
+
+// What the ENV pane shows beyond a state: the image a service runs (always
+// known), the published ports (only while something is exposed) and the exit
+// code of a container that stopped. Compose types these differently between
+// versions, and reports zero for the fields that do not apply.
+func TestParsePsCarriesImagePortsAndExit(t *testing.T) {
+	out := []byte(`[
+	 {"Service":"web","State":"running","Image":"feicampus45-webserver",
+	  "ExitCode":0,
+	  "Publishers":[{"Published":8080,"Target":80,"Protocol":"tcp"},
+	                {"Published":0,"Target":9000,"Protocol":"tcp"}]},
+	 {"Service":"db","State":"exited","Image":"mariadb:11.4","ExitCode":137,"Publishers":[]},
+	 {"Service":"admin","State":"running","Publishers":[{"Published":"3307","Target":"3306"}]}
+	]`)
+	got := ParsePs(out)
+	if len(got) != 3 {
+		t.Fatalf("services: %+v", got)
+	}
+	if got[0].Image != "feicampus45-webserver" {
+		t.Fatalf("image: %+v", got[0])
+	}
+	if got[0].Ports != "8080→80" {
+		t.Fatalf("ports (published 0 is not a port): %q", got[0].Ports)
+	}
+	if got[1].Exit != 137 || got[1].Ports != "" {
+		t.Fatalf("stopped container: %+v", got[1])
+	}
+	// string-shaped numbers are the other shape compose has shipped
+	if got[2].Ports != "3307→3306" {
+		t.Fatalf("string ports: %q", got[2].Ports)
+	}
+}

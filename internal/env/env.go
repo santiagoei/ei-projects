@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -26,6 +27,9 @@ type Service struct {
 	Name   string `json:"name"`
 	State  string `json:"state"`
 	Health string `json:"health,omitempty"`
+	Image  string `json:"image,omitempty"`
+	Ports  string `json:"ports,omitempty"` // "8080→80", "" while nothing is published
+	Exit   int    `json:"exit"`            // meaningful only for a stopped container
 }
 
 // Detect returns the first directory holding a compose file and the file
@@ -96,6 +100,9 @@ func ParsePs(data []byte) []Service {
 			Name:   field(m, "Service", "service", "Name", "name"),
 			State:  field(m, "State", "state"),
 			Health: field(m, "Health", "health"),
+			Image:  field(m, "Image", "image"),
+			Ports:  ports(m["Publishers"]),
+			Exit:   number(m["ExitCode"]),
 		}
 		if svc.Name == "" {
 			svc.Name = field(m, "Name", "name") // containers outside compose entries
@@ -106,6 +113,50 @@ func ParsePs(data []byte) []Service {
 		out = append(out, svc)
 	}
 	return out
+}
+
+// ports is the published side of the mapping, the only part a person acts on:
+// "8080→80". Compose has shipped Published as a number and as a string, and
+// reports 0 for a service nothing is exposed from -- and while every container
+// is down there is nothing published at all.
+func ports(v any) string {
+	list, ok := v.([]any)
+	if !ok {
+		return ""
+	}
+	var out []string
+	for _, e := range list {
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		pub := stringify(m["Published"])
+		if pub == "" || pub == "0" {
+			continue
+		}
+		if target := stringify(m["Target"]); target != "" {
+			out = append(out, pub+"→"+target)
+		} else {
+			out = append(out, pub)
+		}
+	}
+	return strings.Join(out, ", ")
+}
+
+// stringify and number read the fields compose has typed both ways.
+func stringify(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case float64:
+		return strconv.Itoa(int(t))
+	}
+	return ""
+}
+
+func number(v any) int {
+	n, _ := strconv.Atoi(stringify(v))
+	return n
 }
 
 func decodeStream(data []byte) []map[string]any {

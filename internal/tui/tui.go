@@ -338,7 +338,7 @@ func (m Model) items(p paneFocus) []item {
 	case paneEnv:
 		out := make([]item, 0, len(m.envSvcs))
 		for i, s := range m.envSvcs {
-			out = append(out, item{idx: i, label: s.Name + " " + s.State})
+			out = append(out, item{idx: i, label: s.Name + " " + s.State + " " + s.Image + " " + s.Ports})
 		}
 		return out
 	case paneCommits:
@@ -986,12 +986,29 @@ func (m *Model) envAction(key string) (bool, tea.Cmd) {
 		}
 	case "d":
 		args = []string{"down"}
+	case "b":
+		args = []string{"build"}
+		if svc != "" {
+			args = append(args, svc)
+		}
+	case "p":
+		args = []string{"pull"}
+		if svc != "" {
+			args = append(args, svc)
+		}
+	case "k":
+		args = []string{"kill"}
+		if svc != "" {
+			args = append(args, svc)
+		}
 	case "r":
 		if svc == "" {
 			return true, m.setStatus("restart: no service selected")
 		}
 		args = []string{"restart", svc}
-	case "l":
+	case "l", "enter":
+		// enter is logs, not nothing: following a container's output cannot
+		// break anything, and it is the verb reached for most
 		args = []string{"logs", "-f"}
 		if svc != "" {
 			args = append(args, svc)
@@ -1133,8 +1150,8 @@ func (m Model) onEnter() (tea.Model, tea.Cmd) {
 			return m, m.reported(actions.Lazygit(repo.Path), "lazygit", repo.Path)
 		}
 	case paneEnv:
-		// inert on purpose: compose verbs need a deliberate letter, and
-		// an accidental enter should never spin up (or down) a server
+		// enter means logs; it is handled with the rest of the compose verbs,
+		// and an accidental enter must never spin up (or down) a server
 	case paneCommits:
 		return m.actCopy()
 	case paneSessions:
@@ -1471,6 +1488,9 @@ func (m Model) legend() string {
 			{"r", "restart"},
 			{"l", "logs"},
 			{"x", "shell"},
+			{"b", "build"},
+			{"p", "pull"},
+			{"k", "kill"},
 			{"tab", "panes"},
 		}
 		tail = []kb{{"?", "help"}, {"q", "quit"}}
@@ -1621,6 +1641,9 @@ func projectBadge(p scan.Project, budget int) string {
 	case len(p.Repos) == 0:
 		return dim("—")
 	}
+	if p.EnvFile != "" {
+		budget = max(1, budget-1) // a project with an environment is marked
+	}
 	shown := min(len(p.Repos), max(1, budget))
 	for shown > 1 && shown+suffixLen(len(p.Repos)-shown) > budget {
 		shown--
@@ -1643,7 +1666,19 @@ func projectBadge(p scan.Project, budget int) string {
 	if rest := len(p.Repos) - shown; rest > 0 {
 		out.WriteString(dim(fmt.Sprintf("+%d", rest)))
 	}
+	if p.EnvFile != "" {
+		out.WriteString(cyan("⎈"))
+	}
 	return out.String()
+}
+
+// baseName is the last path segment of an image reference: the part a person
+// reads, not the registry in front of it.
+func baseName(s string) string {
+	if i := strings.LastIndexByte(s, '/'); i >= 0 {
+		return s[i+1:]
+	}
+	return s
 }
 
 // plural is the one count a row is allowed to get wrong-looking: "1 repos"
@@ -1907,8 +1942,14 @@ func (m Model) paneEnv(g geom) string {
 			case "unhealthy":
 				state += red(" unhealthy")
 			}
-			nameW := max(1, min(inner-16, 24))
-			line := padR(clip(s.Name, nameW), nameW) + state
+			nameW := max(1, min(inner-26, 24))
+			mark := ""
+			if s.Ports != "" {
+				mark = cyan(" " + s.Ports) // what to curl, without leaving the cockpit
+			} else if s.Image != "" {
+				mark = dim(" " + clip(baseName(s.Image), 18))
+			}
+			line := padR(clip(s.Name, nameW), nameW) + state + mark
 			lines = append(lines, m.fillRow(paneEnv, "> "+line, pos == m.cursors[paneEnv], inner))
 		}
 	}
@@ -2035,6 +2076,10 @@ func (m Model) paneNotes(g geom) string {
 		listWindow(lines, m.cursors[paneNotes], h-2, inner))
 }
 
+// helpPair is one key with the thing it does, the unit the help screen lays
+// out with.
+type helpPair struct{ key, label string }
+
 // helpView is a help screen that has to survive a 60-column window and a
 // 22-row one. Rows are laid out from key/label pairs that wrap BETWEEN pairs
 // (never inside an escape sequence, and never mid-word where it would add a
@@ -2042,10 +2087,6 @@ func (m Model) paneNotes(g geom) string {
 // window has -- a help overlay that scrolls off the bottom hides the keys it
 // was opened to explain. The groups are ordered so the keys that get you out
 // are the last ones to disappear.
-// helpPair is one key with the thing it does, the unit the help screen lays
-// out with.
-type helpPair struct{ key, label string }
-
 func (m Model) helpView() string {
 	groups := []struct {
 		title string
@@ -2081,7 +2122,8 @@ func (m Model) helpView() string {
 		}},
 		{"env · docker compose", []helpPair{
 			{"u", "up"}, {"s", "stop"}, {"d", "down"}, {"r", "restart"},
-			{"l", "logs"}, {"x", "shell — always in a terminal"},
+			{"l · enter", "logs"}, {"x", "shell"}, {"b", "build"},
+			{"p", "pull"}, {"k", "kill — always in a terminal"},
 		}},
 	}
 

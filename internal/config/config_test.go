@@ -87,6 +87,38 @@ func TestLoadOverrideFile(t *testing.T) {
 	}
 }
 
+// The layout key is a string, but only three strings mean anything: a typo
+// would otherwise silently do nothing at every window size, which is the worst
+// kind of config to be wrong about.
+func TestLoadLayout(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("OMARCHY_SHELL_JSON", filepath.Join(root, "missing.json"))
+	dir := filepath.Join(root, "only")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, ".config", "ei-projects", "config.json")
+
+	for _, want := range []string{"auto", "wide", "compact"} {
+		writeFile(t, path, `{"watchDirs":["/only"],"layout":"`+want+`"}`)
+		cfg, err := Load()
+		if err != nil || cfg.Layout != want {
+			t.Fatalf("layout %q: %+v %v", want, cfg, err)
+		}
+	}
+	// with nothing set, the window decides
+	writeFile(t, path, `{"watchDirs":["/only"]}`)
+	if cfg, err := Load(); err != nil || cfg.Layout != "auto" {
+		t.Fatalf("default layout: %+v %v", cfg, err)
+	}
+	// and a word that is not one of the three is refused, not ignored
+	writeFile(t, path, `{"watchDirs":["/only"],"layout":"side"}`)
+	if _, err := Load(); err == nil {
+		t.Fatal("an unknown layout must be an error")
+	}
+}
+
 func TestLoadNoSourcesIsError(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)

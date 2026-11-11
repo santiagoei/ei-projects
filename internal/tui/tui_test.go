@@ -1160,6 +1160,92 @@ func TestDetailBlockUsesTheSpareRows(t *testing.T) {
 	}
 }
 
+// A narrow tall window docks the cockpit: one column, every box as wide as the
+// terminal, the boxes in the order the click map says, and nothing cut off the
+// bottom. A short window refuses the stack however it is asked, because a
+// frame taller than the screen eats its own top border.
+func TestCompactStack(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	m := drive(t, New(&config.Config{}), tea.WindowSizeMsg{Width: 90, Height: 46})
+	m = drive(t, m, scanDoneMsg{report: testReport()})
+	g := m.geom()
+	if !g.single {
+		t.Fatalf("90 columns x 46 rows should stack (bodyH %d)", g.bodyH)
+	}
+	view := m.View()
+	if n := strings.Count(view, "\n") + 1; n > 45 {
+		t.Fatalf("the stack is %d lines\n%s", n, view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(line); w > 90 {
+			t.Fatalf("a stacked row is %d wide: %q", w, line)
+		}
+	}
+	// the order on screen is the order in the map
+	plain := strings.Split(view, "\n")
+	row := func(prefix string) int {
+		for i, l := range plain {
+			if strings.Contains(l, prefix) {
+				return i
+			}
+		}
+		t.Fatalf("%q never painted", prefix)
+		return -1
+	}
+	if a, b, c := row("PROJECTS"), row("REPOSITORIES"), row("OPEN IN"); !(a < b && b < c) {
+		t.Fatalf("the stack order is wrong: projects %d, repos %d, open in %d", a, b, c)
+	}
+	if a, b := row("COMMITS"), row("SESSIONS"); a >= b {
+		t.Fatalf("commits %d, sessions %d", a, b)
+	}
+	// a click lands on the box the map says it does
+	r := g.rects[paneSessions]
+	m = drive(t, m, tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft,
+		X: r.x + 5, Y: r.y + 1})
+	if m.focus != paneSessions {
+		t.Fatalf("click at row %d focused %d", r.y+1, m.focus)
+	}
+	// the detail block is the first thing the stack gives up
+	if g.detailH != 0 {
+		t.Fatalf("the stack kept the detail block: %d rows", g.detailH)
+	}
+
+	// forced shapes: "wide" at a dockable size stays two columns...
+	wide := drive(t, New(&config.Config{Layout: "wide"}), tea.WindowSizeMsg{Width: 90, Height: 46})
+	wide = drive(t, wide, scanDoneMsg{report: testReport()})
+	if wide.geom().single {
+		t.Fatal("layout=wide stacked anyway")
+	}
+	// ... and "compact" refuses when the rows are not there
+	short := drive(t, New(&config.Config{Layout: "compact"}), tea.WindowSizeMsg{Width: 90, Height: 24})
+	short = drive(t, short, scanDoneMsg{report: testReport()})
+	if short.geom().single {
+		t.Fatal("a 24-row window cannot hold six boxes")
+	}
+	if n := strings.Count(short.View(), "\n") + 1; n > 23 {
+		t.Fatalf("24 rows: the view is %d lines", n)
+	}
+	// every size the cockpit accepts, in both shapes, fits
+	for _, size := range []struct{ w, h int }{
+		{60, 22}, {90, 30}, {90, 46}, {100, 60}, {109, 40}, {110, 40}, {140, 24},
+	} {
+		for _, layout := range []string{"", "wide", "compact"} {
+			sm := drive(t, New(&config.Config{Layout: layout}),
+				tea.WindowSizeMsg{Width: size.w, Height: size.h})
+			sm = drive(t, sm, scanDoneMsg{report: testReport()})
+			v := sm.View()
+			if n := strings.Count(v, "\n") + 1; n > size.h-1 {
+				t.Fatalf("%dx%d %s: %d lines\n%s", size.w, size.h, layout, n, v)
+			}
+			for _, line := range strings.Split(v, "\n") {
+				if got := lipgloss.Width(line); got > size.w {
+					t.Fatalf("%dx%d %s: a row is %d wide: %q", size.w, size.h, layout, got, line)
+				}
+			}
+		}
+	}
+}
+
 // Open todos of the selected session appear in the status line while the
 // SESSIONS pane holds focus.
 func TestTodosInStatusLine(t *testing.T) {

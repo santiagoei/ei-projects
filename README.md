@@ -190,6 +190,17 @@ o.window({ class = "^ei-projects$" }, {
 })
 ```
 
+Docked to the side of a monitor instead of floating in the middle, the same
+window asks for a different rule and gets the compact shape for free:
+
+```lua
+o.window({ class = "^ei-projects$" }, {
+  float = true,
+  size  = { "(monitor_w*0.32)", "(monitor_h*0.98)" },
+  move  = { x = "(monitor_w*0.68)", y = "(monitor_h*0.01)" },
+})
+```
+
 `o.launch_sole` focuses the existing window instead of stacking a second
 one; the rule floats, centers and sizes the cockpit over the monitor
 Hyprland has focused.
@@ -206,9 +217,18 @@ shell.json; all keys optional:
   "docsMap": { "uh.humance.app": "50 area.tr/tr.uh" },
   "maxDepth": 4,
   "notesLimit": 5,
-  "sessionLimit": 10
+  "sessionLimit": 10,
+  "layout": "auto"
 }
 ```
+
+`layout` decides the shape of the frame: `"wide"` is the two columns
+described above, `"compact"` is one column with every box as wide as the
+window — the shape a cockpit docked to the side of a monitor wants, where
+two columns start fighting for width below about 110 columns. `"auto"`
+(that is the default) picks by width, and both shapes refuse to be shorter
+than the six boxes need: a window too small for the stack keeps the two
+columns, because a frame taller than the terminal eats its own top border.
 
 `docsMap` pins a project to its vault folder when the folder's naming
 scheme (PARA-like `tr.uh`) does not speak the project's name — the token

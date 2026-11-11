@@ -30,6 +30,10 @@ type Config struct {
 	MaxDepth     int               `json:"maxDepth"`     // .git search depth per watch dir
 	NotesLimit   int               `json:"notesLimit"`   // recent .md rows per project
 	SessionLimit int               `json:"sessionLimit"` // opencode sessions per project
+	// Layout is "auto", "wide" or "compact": two columns, or one column as
+	// wide as the window for a cockpit docked to the side of a monitor. Auto
+	// picks by width and gives up when the window has no room for the stack.
+	Layout string `json:"layout"`
 }
 
 // widgetEntry is one layout slot in shell.json. Everything is an `any` bag:
@@ -39,6 +43,7 @@ type widgetEntry map[string]any
 
 func Load() (*Config, error) {
 	cfg := Config{
+		Layout:       "auto",
 		MaxDepth:     DefaultMaxDepth,
 		NotesLimit:   DefaultNotesLimit,
 		SessionLimit: DefaultSessionLimit,
@@ -64,6 +69,7 @@ func Load() (*Config, error) {
 			MaxDepth     *int               `json:"maxDepth"`
 			NotesLimit   *int               `json:"notesLimit"`
 			SessionLimit *int               `json:"sessionLimit"`
+			Layout       *string            `json:"layout"`
 		}
 		if err := json.Unmarshal(data, &own); err != nil {
 			return nil, fmt.Errorf("%s: %w", ownPath, err)
@@ -85,6 +91,14 @@ func Load() (*Config, error) {
 		}
 		if own.SessionLimit != nil && *own.SessionLimit > 0 {
 			cfg.SessionLimit = *own.SessionLimit
+		}
+		if own.Layout != nil {
+			switch *own.Layout {
+			case "auto", "wide", "compact":
+				cfg.Layout = *own.Layout
+			default:
+				return nil, fmt.Errorf("%s: layout must be auto, wide or compact (not %q)", ownPath, *own.Layout)
+			}
 		}
 	}
 

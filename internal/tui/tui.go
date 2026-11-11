@@ -1327,7 +1327,9 @@ func (m Model) breadcrumb() string {
 	// dropped instead, least important first, and what is left standing is
 	// short enough by construction to fit the narrowest window the cockpit
 	// accepts (60 columns), because each piece was clipped as plain text.
-	fits := func(s string) bool { return lipgloss.Width(s+right) <= m.width }
+	// one column of air between the two ends, always: a segment that reaches
+	// the timestamp reads as one long word
+	fits := func(s string) bool { return lipgloss.Width(s+right) <= m.width-1 }
 	bare := lipgloss.NewStyle().Foreground(pal().faint)
 	switch {
 	case fits(name + repo + tail):
@@ -1424,13 +1426,20 @@ func (m Model) View() string {
 	}
 	right = append(right, commits, sessions, notes)
 
-	left := []string{projects, repos}
-	if detail := m.paneDetail(g); detail != "" {
-		left = append(left, detail)
+	var frame string
+	if g.single {
+		// one column, in the order the mouse map was built with
+		frame = lipgloss.JoinVertical(lipgloss.Left,
+			append([]string{projects, repos}, right...)...)
+	} else {
+		left := []string{projects, repos}
+		if detail := m.paneDetail(g); detail != "" {
+			left = append(left, detail)
+		}
+		frame = lipgloss.JoinHorizontal(lipgloss.Top,
+			lipgloss.JoinVertical(lipgloss.Left, left...),
+			lipgloss.JoinVertical(lipgloss.Left, right...))
 	}
-	frame := lipgloss.JoinHorizontal(lipgloss.Top,
-		lipgloss.JoinVertical(lipgloss.Left, left...),
-		lipgloss.JoinVertical(lipgloss.Left, right...))
 
 	// breadcrumb on top, frame, then the two lines that read the frame: the
 	// status (an action, a filter, a session's open items) and the keys

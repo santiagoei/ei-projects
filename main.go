@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/santiagoei/ei-projects/internal/actions"
 	"github.com/santiagoei/ei-projects/internal/agent"
 	"github.com/santiagoei/ei-projects/internal/config"
+	"github.com/santiagoei/ei-projects/internal/hypr"
 	"github.com/santiagoei/ei-projects/internal/scan"
 	"github.com/santiagoei/ei-projects/internal/tui"
 )
@@ -89,6 +91,7 @@ func rest() []string {
 func cockpit() {
 	fs := flag.NewFlagSet("ei-projects", flag.ExitOnError)
 	showVersion := fs.Bool("version", false, "print version and exit")
+	here := fs.Bool("here", false, "open on the project of the focused window")
 	fs.Parse(os.Args[1:])
 	if *showVersion {
 		fmt.Println("ei-projects " + version)
@@ -100,7 +103,15 @@ func cockpit() {
 		fmt.Fprintln(os.Stderr, "ei-projects:", err)
 		os.Exit(1)
 	}
-	p := tea.NewProgram(tui.New(cfg), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	model := tui.New(cfg)
+	if *here {
+		// a keybind that says "open where I am" needs the compositor to answer;
+		// when it cannot, the cockpit opens on the seat it saved
+		if dir, ok := hypr.ActiveDir(); ok {
+			model = model.WithSeed(dir)
+		}
+	}
+	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "ei-projects:", err)
 		os.Exit(1)
@@ -131,6 +142,7 @@ Without one, the repository the cockpit last had selected.
 // and what to do when the name is not given.
 type resolveFlags struct {
 	Project string
+	Here    bool
 	Last    bool
 	All     bool
 	Pretty  bool
@@ -176,6 +188,7 @@ func parseFlags(name string, args []string) resolveFlags {
 	fs.BoolVar(&f.Last, "last", false, "the repository the cockpit last had selected")
 	fs.BoolVar(&f.All, "all", false, "every repository of the project (code)")
 	fs.BoolVar(&f.Pretty, "pretty", false, "indent the JSON (scan)")
+	fs.BoolVar(&f.Here, "here", false, "the project of the focused window")
 	fs.Parse(args)
 	if len(fs.Args()) > 0 && f.Project == "" {
 		f.Project = strings.Join(fs.Args(), " ")
@@ -191,6 +204,11 @@ func fail(err error) {
 // resolve turns what the user typed into one directory. The names are the
 // cockpit's own: a project's name or number, or any repository inside it.
 // Nothing given means the seat the cockpit left off at.
+// hereFunc is how "the focused window" is asked. A variable so a keybind
+// script can be tested without a compositor: the resolution below is the part
+// that gets the answer wrong, not the reading of it.
+var hereFunc = hypr.ActiveDir
+
 func resolve(f resolveFlags) (string, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -200,6 +218,14 @@ func resolve(f resolveFlags) (string, error) {
 	defer cancel()
 	report := scan.Run(ctx, cfg)
 
+	// --here is a name resolved by the compositor instead of by the user
+	if f.Here && f.Project == "" {
+		dir, ok := hereFunc()
+		if !ok {
+			return "", fmt.Errorf("no focused window to read a directory from")
+		}
+		f.Project = dir
+	}
 	if f.Project == "" {
 		if f.All {
 			return "", fmt.Errorf("-all needs a project: ei-projects code --all [project]")
@@ -245,6 +271,15 @@ func resolve(f resolveFlags) (string, error) {
 			if strings.EqualFold(base(r.Path), want) {
 				return r.Path, nil
 			}
+		}
+	}
+	// a full path (--here, or a paste) is resolved by containment, not name
+	if strings.Contains(f.Project, "/") {
+		if i, repo, ok := report.Where(filepath.Clean(f.Project)); ok {
+			if repo >= 0 {
+				return report.Projects[i].Repos[repo].Path, nil
+			}
+			return report.Projects[i].Path, nil
 		}
 	}
 	return "", fmt.Errorf("no project or repository %q (%s)", f.Project, strings.Join(names, ", "))

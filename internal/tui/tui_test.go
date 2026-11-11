@@ -1426,3 +1426,33 @@ func TestTodosInStatusLine(t *testing.T) {
 		t.Fatal("stale todos reply was rendered")
 	}
 }
+
+// A cockpit opened from a keybind that knows where the user is looking starts
+// on that project and repository -- and a directory nobody watches moves
+// nothing, because opening on the first project would be a lie.
+func TestSeedOpensOnTheFocusedWindow(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// the seat the last run left behind, which a seed must outrank
+	// the fixture's repositories are siblings of the project except for
+	// icampus, which lives inside it -- the deepest match has to win
+	m := New(&config.Config{}).WithSeed("/p/icampus.fei.org/icampus/mod")
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: testReport()})
+	if m.project != 1 {
+		t.Fatalf("seeded project: %d", m.project)
+	}
+	if repo, ok := m.selectedRepo(); !ok || filepath.Base(repo.Path) != "icampus" {
+		t.Fatalf("seeded repository: %+v %v", repo, ok)
+	}
+	if m.cursors[paneSessions] != 0 {
+		t.Fatal("a seed inherits rows from the last run")
+	}
+
+	// outside every watched folder: the ordinary default, no guess
+	m2 := New(&config.Config{}).WithSeed("/tmp/random")
+	m2 = drive(t, m2, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m2 = drive(t, m2, scanDoneMsg{report: testReport()})
+	if m2.project != 0 || m2.repo != 0 {
+		t.Fatalf("an unknown seed moved the selection: %d/%d", m2.project, m2.repo)
+	}
+}

@@ -188,6 +188,13 @@ mise exec -- go build -o ~/.local/bin/ei-projects .
 -- SUPER+M (solo): project cockpit, flotante y centrado.
 o.bind("SUPER + M", "Projects",
   o.launch_sole("ei-projects", "foot --app-id=ei-projects -e ei-projects"))
+
+-- SUPER+SHIFT+M: open where I am looking. Hyprland answers with the working
+-- directory of the focused window's process, which is the folder a terminal
+-- was started in -- and no keypress naming a project.
+o.bind("SUPER + SHIFT + M", "Projects here",
+  o.launch_sole("ei-projects here",
+    "foot --app-id=ei-projects -e ei-projects --here"))
 ```
 
 `~/.config/hypr/looknfeel.lua`:
@@ -267,7 +274,16 @@ ei-projects agent moodle405      # a repository by its own name
 ei-projects terminal 2           # or by its number in the watched list
 ei-projects resume               # the newest session across every watch dir
 ei-projects resume ses_01Ab...   # or one by id, in the directory it ran in
+ei-projects code --here          # the project of the window you are looking at
 ```
+
+`--here` asks Hyprland for the working directory of the focused window's
+process — no window, no compositor, or a process sitting in `$HOME` (where
+every `.desktop` application starts) means no answer, and the launchers fall
+back to the saved seat. The cockpit takes the same flag: `ei-projects --here`
+opens on that project and repository instead of where it closed. A watched
+folder that is nested inside another is resolved to the deepest match, so
+watching both `~/Projects` and `~/Projects/obsidian` cannot answer twice.```
 
 They read the same config, the same watched folders and the same saved seat
 as the cockpit, so `SUPER+M` and a bare `ei-projects code` agree on what

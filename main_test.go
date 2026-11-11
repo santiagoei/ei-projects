@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/santiagoei/ei-projects/internal/hypr"
 	"github.com/santiagoei/ei-projects/internal/tui"
 )
 
@@ -166,6 +167,42 @@ func TestIsCommand(t *testing.T) {
 		if !strings.Contains(usage, c) {
 			t.Errorf("usage does not document %q", c)
 		}
+	}
+}
+
+// --here turns "open where I am" into a path without the user typing one. The
+// compositor is the only one who knows the answer, so this tests what happens
+// when it answers, and when it does not.
+func TestResolveHere(t *testing.T) {
+	_, repoA, projB := sandbox(t)
+	hereFunc = func() (string, bool) { return repoA, true }
+	t.Cleanup(func() { hereFunc = hypr.ActiveDir })
+
+	got, err := resolve(resolveFlags{Here: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(got) != filepath.Base(repoA) {
+		t.Fatalf("--here resolved to %q, want %q", got, repoA)
+	}
+
+	// a directory outside every watched folder is refused, not guessed
+	hereFunc = func() (string, bool) { return "/tmp/somewhere-else", true }
+	if _, err := resolve(resolveFlags{Here: true}); err == nil {
+		t.Fatal("an unwatched directory must be refused")
+	}
+
+	// and a desktop with no answer to give says so
+	hereFunc = func() (string, bool) { return "", false }
+	if _, err := resolve(resolveFlags{Here: true}); err == nil ||
+		!strings.Contains(err.Error(), "focused window") {
+		t.Fatalf("no compositor: %v", err)
+	}
+	// a name typed anyway wins over --here
+	hereFunc = func() (string, bool) { return projB, true }
+	if got, err := resolve(resolveFlags{Here: true, Project: "projA"}); err != nil ||
+		filepath.Base(got) != filepath.Base(repoA) {
+		t.Fatalf("the typed name lost to --here: %q %v", got, err)
 	}
 }
 

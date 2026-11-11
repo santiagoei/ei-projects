@@ -12,6 +12,7 @@ import (
 
 	"github.com/santiagoei/ei-projects/internal/agent"
 	"github.com/santiagoei/ei-projects/internal/config"
+	"github.com/santiagoei/ei-projects/internal/gitx"
 )
 
 func git(t *testing.T, dir string, args ...string) {
@@ -224,5 +225,48 @@ func TestRunEndToEnd(t *testing.T) {
 	// and the whole report survives the contract round-trip
 	if _, err := rep.JSON(false); err != nil {
 		t.Fatalf("json: %v", err)
+	}
+}
+
+// Where is how "open where I am" becomes a selection: the deepest watched
+// folder wins, the deepest repository inside it wins again, and a directory
+// nobody watches is answered with "no" rather than a guess.
+func TestWhere(t *testing.T) {
+	rep := Report{Projects: []Project{
+		{Name: "projects", Path: "/home/u/projects", Repos: []gitx.Repo{
+			{Path: "/home/u/projects/fei"},
+			{Path: "/home/u/projects/fei/moodle"},
+		}},
+		{Name: "vault", Path: "/home/u/notes/obsidian"},
+		{Name: "gone", Path: "/home/u/gone", Missing: true,
+			Repos: []gitx.Repo{{Path: "/home/u/gone/x"}}},
+	}}
+
+	for _, tc := range []struct {
+		dir           string
+		project, repo int
+		ok            bool
+	}{
+		{"/home/u/projects/fei/moodle", 0, 1, true},
+		{"/home/u/projects/fei/moodle/mod/data", 0, 1, true},
+		{"/home/u/projects/fei", 0, 0, true},
+		{"/home/u/projects/fei/elsewhere", 0, 0, true}, // the folder itself, not a repo
+		{"/home/u/projects", 0, -1, true},
+		{"/home/u/notes/obsidian/20", 1, -1, true},
+		{"/home/u/gone/x", 0, -1, false}, // a missing project is not a match
+		{"/elsewhere", 0, -1, false},
+		{"/home/u", 0, -1, false},
+	} {
+		p, r, ok := rep.Where(tc.dir)
+		if ok != tc.ok {
+			t.Errorf("Where(%q) ok = %v, want %v", tc.dir, ok, tc.ok)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if p != tc.project || r != tc.repo {
+			t.Errorf("Where(%q) = project %d repo %d, want %d/%d", tc.dir, p, r, tc.project, tc.repo)
+		}
 	}
 }

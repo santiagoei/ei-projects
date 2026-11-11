@@ -249,6 +249,36 @@ func docsFolder(cfg *config.Config, projectPath string) string {
 	return vault.DocsDir(cfg.VaultDir, projectPath)
 }
 
+// Where reports which project and repository a directory falls under: the
+// longest match wins, because watch dirs nest (a vault watched on its own
+// inside a watched Projects folder). repo is -1 when the project itself is the
+// deepest answer, and ok is false when nothing is watched at that path.
+func (r Report) Where(dir string) (project, repo int, ok bool) {
+	sep := string(filepath.Separator)
+	best, bestLen := -1, 0
+	for i, p := range r.Projects {
+		if p.Missing {
+			continue
+		}
+		if dir != p.Path && !strings.HasPrefix(dir, p.Path+sep) {
+			continue
+		}
+		if len(p.Path) <= bestLen {
+			continue
+		}
+		best, bestLen, repo = i, len(p.Path), -1
+		for j, rr := range p.Repos {
+			if rr.Path == dir || strings.HasPrefix(dir, rr.Path+sep) {
+				repo = j // inside this project, the deepest repository is the answer
+			}
+		}
+	}
+	if best < 0 {
+		return 0, 0, false
+	}
+	return best, repo, true
+}
+
 func (r Report) JSON(pretty bool) (string, error) {
 	var (
 		out []byte

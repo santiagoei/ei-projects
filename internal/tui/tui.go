@@ -131,6 +131,9 @@ type Model struct {
 	spinner        spinner.Model
 	help           bool
 	restored       bool
+	// seed is the directory to open on, instead of the saved seat: the
+	// cockpit asked from a keybind that knows where the user is looking.
+	seed string
 
 	// The filter: a needle, the pane it applies to, and whether the keyboard
 	// is still feeding it. One pane at a time on purpose -- a cockpit where
@@ -150,6 +153,14 @@ type Model struct {
 	// statusGen counts the status lines set: only the tick armed by the
 	// newest one is allowed to clear it.
 	statusGen int
+}
+
+// WithSeed opens the cockpit on the project (and repository) containing dir,
+// ignoring the seat the last run left behind. Hyprland answers "where am I"
+// when a keybind does not carry an answer; this is where that lands.
+func (m Model) WithSeed(dir string) Model {
+	m.seed = dir
+	return m
 }
 
 func New(cfg *config.Config) Model {
@@ -618,6 +629,22 @@ func (m *Model) selectProject(idx int) {
 	m.remoteFor = ""
 }
 
+// selectSeed parks the selection on the deepest project and repository that
+// contain the directory the user was looking at. A seed that names nothing in
+// the watched list is ignored rather than guessed at: opening on the first
+// project would be a lie about where they were.
+func (m *Model) selectSeed(dir string) {
+	i, repo, ok := m.report.Where(dir)
+	if !ok {
+		return
+	}
+	m.project, m.repo = i, 0
+	m.cursors = map[paneFocus]int{}
+	if repo >= 0 {
+		m.repo = repo
+	}
+}
+
 // clampCursors parks every cursor inside the rows its pane actually shows --
 // after a rescan, or after a filter hid the row someone was standing on.
 func (m *Model) clampCursors() {
@@ -739,8 +766,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scannedAt = time.Now()
 		if !m.restored {
 			m.restored = true
-			s := loadState()
-			if s.Project != "" {
+			if m.seed != "" {
+				m.selectSeed(m.seed)
+			} else if s := loadState(); s.Project != "" {
 				m.selectByPath(s.Project, s.Repo)
 				m.restoreCursors(s)
 			}

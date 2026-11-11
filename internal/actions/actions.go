@@ -19,12 +19,23 @@ func start(name string, args ...string) error {
 	return cmd.Start()
 }
 
+// The two doors every action goes through, as variables: a test swaps them
+// and reads back what the cockpit asked for, instead of spawning lazygit on
+// the developer's desktop or polling hyprctl for three seconds. Nothing else
+// in the package needs to be replaceable -- the argv discipline, the path
+// handling and the focus dance are the parts worth pinning, and they stay
+// exactly where they are.
+var (
+	Start      = start
+	OpenWindow = launch
+)
+
 // launch is start for anything that opens a window. Hyprland focuses every
 // new window, which would pull the keyboard away from the cockpit; so once
 // the window count grows, the cockpit takes focus back.
 func launch(name string, args ...string) error {
 	before := windowCount()
-	if err := start(name, args...); err != nil {
+	if err := Start(name, args...); err != nil {
 		return err
 	}
 	if before >= 0 {
@@ -60,24 +71,24 @@ func refocusCockpit(before int) {
 }
 
 func Lazygit(path string) error {
-	return launch("omarchy-launch-tui", "lazygit", "-p", path)
+	return OpenWindow("omarchy-launch-tui", "lazygit", "-p", path)
 }
 
 func Terminal(dir string) error {
-	return launch("uwsm-app", "--", "xdg-terminal-exec", "--dir="+dir)
+	return OpenWindow("uwsm-app", "--", "xdg-terminal-exec", "--dir="+dir)
 }
 
 func Editor(path string) error {
-	return launch("omarchy-launch-editor", path)
+	return OpenWindow("omarchy-launch-editor", path)
 }
 
 func Agent(dir string) error {
-	return launch("uwsm-app", "--", "xdg-terminal-exec", "--dir="+dir,
+	return OpenWindow("uwsm-app", "--", "xdg-terminal-exec", "--dir="+dir,
 		"-e", "omarchy-agent", "--inline")
 }
 
 func Explore(dir string) error {
-	return launch("uwsm-app", "--", "xdg-open", dir)
+	return OpenWindow("uwsm-app", "--", "xdg-open", dir)
 }
 
 // Compose opens a terminal already cd'd into the environment and runs the
@@ -86,20 +97,20 @@ func Explore(dir string) error {
 func Compose(dir, file string, args ...string) error {
 	full := append([]string{"--", "xdg-terminal-exec", "--dir=" + dir,
 		"-e", "docker", "compose", "-f", file}, args...)
-	return launch("uwsm-app", full...)
+	return OpenWindow("uwsm-app", full...)
 }
 
 func OpenFile(path string) error {
-	return launch("uwsm-app", "--", "xdg-open", path)
+	return OpenWindow("uwsm-app", "--", "xdg-open", path)
 }
 
 func Copy(path string) error {
-	return start("wl-copy", path)
+	return Start("wl-copy", path)
 }
 
 // ResumeSession reopens an opencode session in a terminal over the directory
 // it was started in: the same jump omarchy-agent-sessions performs.
 func ResumeSession(dir, id string) error {
-	return launch("uwsm-app", "--", "xdg-terminal-exec", "--dir="+dir,
+	return OpenWindow("uwsm-app", "--", "xdg-terminal-exec", "--dir="+dir,
 		"-e", "opencode", "--auto", "--session", id)
 }

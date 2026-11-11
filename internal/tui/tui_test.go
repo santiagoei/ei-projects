@@ -289,6 +289,84 @@ func TestEnvPaneRefreshesAndShowsKeys(t *testing.T) {
 	}
 }
 
+// Which key runs what, on the row the cursor stands on: this is the net the
+// filter is about to be hung on.
+func TestKeysActOnTheSelectedRow(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	got := captureActions(t)
+
+	rep := testReport()
+	rep.Projects[1].EnvDir = "/p/icampus.fei.org"
+	rep.Projects[1].EnvFile = "/p/icampus.fei.org/docker-compose.yml"
+	m := New(&config.Config{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: rep})
+	m.selectProject(1)
+	key := func(k string) tea.Msg {
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
+	}
+
+	// the OPEN IN letters act on the selected repository
+	m.repo = 2
+	m = drive(t, m, key("c"))
+	if c := lastCmd(t, got); !strings.Contains(c, "omarchy-launch-editor /p/moodle405") {
+		t.Fatalf("c: %q", c)
+	}
+	m = drive(t, m, key("t"))
+	if c := lastCmd(t, got); !strings.Contains(c, "--dir=/p/moodle405") {
+		t.Fatalf("t: %q", c)
+	}
+	// enter on the repos pane is lazygit
+	m.focus = paneRepos
+	m = drive(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if c := lastCmd(t, got); c != "omarchy-launch-tui lazygit -p /p/moodle405" {
+		t.Fatalf("enter: %q", c)
+	}
+
+	// a commit's enter copies its sha, not the row's position
+	m = drive(t, m, commitsDoneMsg{repoPath: "/p/moodle405", commits: []gitx.Commit{
+		{Hash: "97d5fe3", Subject: "Move files"}, {Hash: "82cde26", Subject: "Audit"},
+	}})
+	m.focus = paneCommits
+	m.cursors[paneCommits] = 1
+	m = drive(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if c := lastCmd(t, got); c != "wl-copy 82cde26" {
+		t.Fatalf("copy sha: %q", c)
+	}
+
+	// resuming a session lands in the directory that session ran in
+	sid := m.sessionsFor()[0].ID
+	m.focus = paneSessions
+	m = drive(t, m, key("s"))
+	if c := lastCmd(t, got); !strings.Contains(c, "--dir="+m.sessionsFor()[0].Directory) ||
+		!strings.Contains(c, "--session "+sid) {
+		t.Fatalf("resume: %q", c)
+	}
+
+	// a note opens the vault file it names
+	m.focus = paneNotes
+	m.cursors[paneNotes] = 1
+	m = drive(t, m, key("d"))
+	if c := lastCmd(t, got); c != "uwsm-app -- xdg-open "+m.proj().Notes[1].Path {
+		t.Fatalf("open note: %q", c)
+	}
+
+	// and the compose verbs run against the detected file, on the service the
+	// ENV cursor holds
+	m.envSvcs = []env.Service{{Name: "web", State: "running"}, {Name: "db", State: "exited"}}
+	m.focus = paneEnv
+	m.cursors[paneEnv] = 1
+	m = drive(t, m, key("r"))
+	if c := lastCmd(t, got); !strings.Contains(c,
+		"docker compose -f /p/icampus.fei.org/docker-compose.yml restart db") {
+		t.Fatalf("compose restart: %q", c)
+	}
+	// the echo in the status line names the thing it acted on, not a path
+	if !strings.Contains(m.status, "compose") {
+		t.Fatalf("no feedback for the compose verb: %q", m.status)
+	}
+}
+
 // A broken feed announces itself: a warning in the pane title, the reason in
 // the status line while that pane holds focus, and an empty list that
 // explains why it is empty instead of looking dead. A feed that merely has

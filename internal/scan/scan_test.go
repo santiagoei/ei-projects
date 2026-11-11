@@ -53,6 +53,29 @@ func TestFeedNotes(t *testing.T) {
 	}
 }
 
+// A session is answered by the deepest watched folder holding it: the cockpit
+// reads a name out of the row, and "obsidian" beats "notes" when the vault is
+// watched both ways.
+func TestProjectOfIsTheLongestMatch(t *testing.T) {
+	projects := []Project{
+		{Name: "notes", Path: "/home/notes"},
+		{Name: "obsidian", Path: "/home/notes/obsidian"},
+		{Name: "proj", Path: "/srv/proj"},
+	}
+	for _, tc := range []struct{ dir, want string }{
+		{"/home/notes/obsidian/20/x.md"[:len("/home/notes/obsidian/20")], "obsidian"},
+		{"/home/notes", "notes"},
+		{"/home/notes/other", "notes"},
+		{"/home/notesometry", ""}, // a text prefix is not a parent directory
+		{"/srv/proj/repo", "proj"},
+		{"/elsewhere", ""},
+	} {
+		if got := projectOf(tc.dir, projects); got != tc.want {
+			t.Errorf("projectOf(%q) = %q, want %q", tc.dir, got, tc.want)
+		}
+	}
+}
+
 // The badge on a session row is filled for the whole report in one query:
 // every session of every project gets its count, and a session listed under
 // two roots (a watch dir nested in another) is asked about once and appears
@@ -77,7 +100,7 @@ func TestFillOpenTodos(t *testing.T) {
 		{Sessions: []agent.Session{{ID: "s1"}}}, // the nested watch dir repeats it
 		{Sessions: []agent.Session{{ID: "s3"}}},
 	}
-	fillOpenTodos(projects)
+	fillOpenTodos(projects, nil)
 	if got := projects[0].Sessions[0].OpenTodos; got != 2 {
 		t.Fatalf("s1 wants its two open items, got %d", got)
 	}

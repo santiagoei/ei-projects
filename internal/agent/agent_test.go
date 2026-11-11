@@ -207,6 +207,51 @@ func TestOpenTodos(t *testing.T) {
 
 // The badge on a session row costs ONE query for the whole report, so the
 // counting has to be able to say "how many" about many sessions at once.
+// The global list is one query over every watch dir. Two things have to hold
+// that the per-project read cannot show: roots whose text is a prefix of each
+// other must not steal sessions from one another, and a session inside two
+// roots (watch dirs nest) must come back once, not twice.
+func TestRecentsAcrossRoots(t *testing.T) {
+	buildDB(t,
+		"'s1','inside first','/srv/proj/repo',NULL,300000,NULL,1",
+		"'s2','inside second','/srv/other',NULL,200000,NULL,1",
+		// a directory that merely starts with the same text
+		"'s3','lookalike','/srv/projection',NULL,250000,NULL,1",
+		// nested roots: one session, two candidates
+		"'s4','both','/srv/proj/deep',NULL,100000,NULL,1",
+		// archived and child rows stay out, same rules as Recent
+		"'s5','gone','/srv/proj',NULL,999999,1,1",
+		"'s6','child','/srv/proj','s1',888888,NULL,1",
+	)
+	got, err := Recents([]string{"/srv/proj", "/srv/proj/deep", "/srv/other"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("want s1,s2,s4 newest first: %+v", got)
+	}
+	if got[0].ID != "s1" || got[1].ID != "s2" || got[2].ID != "s4" {
+		t.Fatalf("order: %+v", got)
+	}
+	// nothing outside the roots, and nothing twice
+	seen := map[string]bool{}
+	for _, s := range got {
+		if seen[s.ID] {
+			t.Fatalf("duplicate session %s", s.ID)
+		}
+		seen[s.ID] = true
+	}
+	// the limit cuts the union, not each root
+	limited, err := Recents([]string{"/srv/proj", "/srv/other"}, 2)
+	if err != nil || len(limited) != 2 || limited[1].ID != "s2" {
+		t.Fatalf("limit: %+v %v", limited, err)
+	}
+	// and there is no query worth making with no roots at all
+	if got, err := Recents(nil, 10); got != nil || err != nil {
+		t.Fatalf("no roots: %+v %v", got, err)
+	}
+}
+
 func TestOpenCounts(t *testing.T) {
 	if _, err := exec.LookPath("sqlite3"); err != nil {
 		t.Skip("no sqlite3")

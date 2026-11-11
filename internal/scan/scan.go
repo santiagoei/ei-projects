@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +42,10 @@ type Project struct {
 type Report struct {
 	GeneratedAt time.Time `json:"generatedAt"`
 	Projects    []Project `json:"projects"`
+	// AllSessions is every watched folder's newest sessions in one list, the
+	// shape the cockpit's "where was I working" scope reads; each one named
+	// with the project its directory falls under.
+	AllSessions []agent.Session `json:"allSessions"`
 	// FeedNotes describes a feed absent on this machine as a whole (no
 	// sqlite3, no vault): the per-project FeedErrors stay quiet for exactly
 	// those cases, and without this note an empty SESSIONS pane would look
@@ -69,8 +74,42 @@ func Run(ctx context.Context, cfg *config.Config) Report {
 	wg.Wait()
 
 	report.Projects = projects
-	fillOpenTodos(projects)
+	report.AllSessions = allSessions(ctx, cfg, projects)
+	fillOpenTodos(projects, report.AllSessions)
 	return report
+}
+
+// allSessions is the cross-project list the SESSIONS pane shows when the user
+// asks for everywhere at once: one query over the watch dirs rather than one
+// per project, each answer named with the project its directory falls under
+// (the longest one, since watch dirs nest). Its absence is not a failure --
+// scanOne already reports the sessions feed per project, and the global list
+// is the same data in another shape.
+func allSessions(ctx context.Context, cfg *config.Config, projects []Project) []agent.Session {
+	if err := ctx.Err(); err != nil {
+		return nil
+	}
+	sessions, err := agent.Recents(cfg.WatchDirs, cfg.SessionLimit)
+	if err != nil {
+		return nil
+	}
+	for i := range sessions {
+		sessions[i].Project = projectOf(sessions[i].Directory, projects)
+	}
+	return sessions
+}
+
+// projectOf names the watched folder a directory belongs to.
+func projectOf(dir string, projects []Project) string {
+	best, bestLen := "", 0
+	for _, p := range projects {
+		if dir == p.Path || strings.HasPrefix(dir, p.Path+string(filepath.Separator)) {
+			if len(p.Path) > bestLen {
+				best, bestLen = p.Name, len(p.Path)
+			}
+		}
+	}
+	return best
 }
 
 // fillOpenTodos decorates every session of the report with the number of
@@ -79,11 +118,17 @@ func Run(ctx context.Context, cfg *config.Config) Report {
 // tells a user WHICH session to resume, and it has to arrive with the list --
 // a count the user reads only after landing on the row answers the question
 // after the fact.
-func fillOpenTodos(projects []Project) {
+func fillOpenTodos(projects []Project, all []agent.Session) {
+	lists := make([][]agent.Session, 0, len(projects)+1)
+	for i := range projects {
+		lists = append(lists, projects[i].Sessions)
+	}
+	lists = append(lists, all)
+
 	var ids []string
 	seen := map[string]bool{}
-	for _, p := range projects {
-		for _, s := range p.Sessions {
+	for _, list := range lists {
+		for _, s := range list {
 			if !seen[s.ID] {
 				seen[s.ID] = true
 				ids = append(ids, s.ID)
@@ -94,10 +139,9 @@ func fillOpenTodos(projects []Project) {
 	if len(counts) == 0 {
 		return
 	}
-	for i := range projects {
-		for j := range projects[i].Sessions {
-			s := &projects[i].Sessions[j]
-			s.OpenTodos = counts[s.ID]
+	for _, list := range lists {
+		for i := range list {
+			list[i].OpenTodos = counts[list[i].ID]
 		}
 	}
 }

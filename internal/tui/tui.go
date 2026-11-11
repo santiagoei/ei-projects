@@ -45,6 +45,22 @@ const (
 	paneCount
 )
 
+// sessionScope is what the SESSIONS pane is listing. `S` walks it: repo,
+// project, everywhere. Three because "the repository I am looking at", "the
+// project it belongs to" and "the last thing I touched anywhere" are the
+// three questions a cockpit gets asked of a session list.
+type sessionScope int
+
+const (
+	scopeRepo sessionScope = iota
+	scopeProject
+	scopeAll
+)
+
+func (s sessionScope) next() sessionScope {
+	return sessionScope((int(s) + 1) % 3)
+}
+
 type scanDoneMsg struct {
 	report scan.Report
 	err    error
@@ -95,6 +111,7 @@ type Model struct {
 	commitsLoading bool
 	todos          []agent.Todo
 	todosFor       string
+	scope          sessionScope // what the SESSIONS pane is listing
 	envSvcs        []env.Service
 	envFor         string
 	envFetched     bool
@@ -324,7 +341,7 @@ func (m Model) items(p paneFocus) []item {
 		list := m.sessionsFor()
 		out := make([]item, 0, len(list))
 		for i, s := range list {
-			out = append(out, item{idx: i, label: s.Title + " " + s.Directory})
+			out = append(out, item{idx: i, label: s.Title + " " + s.Directory + " " + s.Project})
 		}
 		return out
 	case paneNotes:
@@ -411,10 +428,19 @@ func (m Model) selectedRepo() (gitx.Repo, bool) {
 	return repos[i], true
 }
 
-// sessionsFor narrows the project's session list to the selected repo:
-// a session belongs to the repo its opencode ran in (the same directory
-// prefix rule the scan applied one level up).
+// sessionsFor is what the SESSIONS pane lists: the repository under the cursor
+// (falling back to the project when the repo has no sessions of its own --
+// a session belongs to the directory opencode ran in, which is usually the
+// project root), the whole project, or everywhere at once. The scope is the
+// user's choice; a pane that changes its own source between keystrokes is a
+// pane the user cannot predict.
 func (m Model) sessionsFor() []agent.Session {
+	switch m.scope {
+	case scopeProject:
+		return m.proj().Sessions
+	case scopeAll:
+		return m.report.AllSessions
+	}
 	repo, ok := m.selectedRepo()
 	scope := m.proj().Path
 	if ok {
@@ -431,6 +457,20 @@ func (m Model) sessionsFor() []agent.Session {
 		return append(out, m.proj().Sessions...)
 	}
 	return out
+}
+
+// scopeName is the scope as the pane titles spell it.
+func (s sessionScope) name(repo string) string {
+	switch s {
+	case scopeProject:
+		return "project"
+	case scopeAll:
+		return "all projects"
+	}
+	if repo == "" {
+		return "project"
+	}
+	return repo
 }
 
 // listCount is the number of rows a pane shows -- the rows the user can land
@@ -731,6 +771,18 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if handled, cmd := m.envAction(key); handled {
 			return m, cmd
 		}
+	}
+
+	if key == "S" {
+		// the sessions pane changes what it lists, nothing else: the cursor
+		// stays a row position, the filter keeps its word, and the other
+		// panes keep reading the repository that is actually selected
+		m.scope = m.scope.next()
+		if m.focus != paneSessions {
+			m.cursors[paneSessions] = 0
+		}
+		m.clampCursors()
+		return m, m.todosCmd()
 	}
 
 	switch key {
@@ -1299,6 +1351,7 @@ func (m Model) legend() string {
 			{"1-9", "project"},
 			{"s", "session"},
 			{"d", "note"},
+			{"S", "scope"},
 		}
 		tail = []kb{{"?", "help"}, {"r", "rescan"}, {"q", "quit"}}
 	}
@@ -1618,10 +1671,11 @@ func (m Model) paneSessions(g geom) string {
 	w, h := g.rightW, g.sessionsH
 	inner := w - 4
 	list := m.sessionsFor()
-	scope := "project"
+	repoName := ""
 	if repo, ok := m.selectedRepo(); ok {
-		scope = filepath.Base(repo.Path)
+		repoName = filepath.Base(repo.Path)
 	}
+	scope := m.scope.name(repoName)
 	open := 0
 	for _, s := range list {
 		open += s.OpenTodos
@@ -1645,9 +1699,13 @@ func (m Model) paneSessions(g geom) string {
 		if s.OpenTodos > 0 {
 			badge = orange(fmt.Sprintf(" ▸%d", s.OpenTodos))
 		}
+		from := ""
+		if m.scope == scopeAll && s.Project != "" {
+			from = dim(" " + clip(s.Project, 10))
+		}
 		meta := dim(padL(shortAge(s.Updated), 5) + " " + padL(fmt.Sprintf("$%.2f", s.Cost), 6))
-		free := max(1, inner-lipgloss.Width(meta)-lipgloss.Width(badge)-2)
-		line := padR(clip(s.Title, free), free) + badge + meta
+		free := max(1, inner-lipgloss.Width(meta)-lipgloss.Width(badge)-lipgloss.Width(from)-2)
+		line := padR(clip(s.Title, free), free) + badge + from + meta
 		lines = append(lines, m.fillRow(paneSessions, "> "+line, pos == m.cursors[paneSessions], inner))
 	}
 	if len(lines) == 0 {
@@ -1718,6 +1776,7 @@ func (m Model) helpView() string {
 		}},
 		{"context panes", []helpPair{
 			{"s", "resume session"}, {"d", "open note"}, {"enter", "commits: sha · sessions: resume · notes: open"},
+			{"S", "sessions scope: repo · project · all projects"},
 		}},
 		{"env · docker compose", []helpPair{
 			{"u", "up"}, {"s", "stop"}, {"d", "down"}, {"r", "restart"},

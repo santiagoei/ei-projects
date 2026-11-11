@@ -852,6 +852,75 @@ func TestFilterNarrowsOnePane(t *testing.T) {
 	}
 }
 
+// The SESSIONS pane answers three different questions -- this repository,
+// this project, everywhere -- and switching which one it answers moves nothing
+// else: the selection, the other panes and the filter's word stay where the
+// user left them, and a global session resumes in the directory IT ran in.
+func TestSessionsScopeCycles(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	got := captureActions(t)
+	now := time.Now()
+
+	rep := testReport()
+	rep.AllSessions = []agent.Session{
+		{ID: "g1", Title: "theme_fei4 mejoras", Directory: "/p/other/repo", Project: "other", Updated: now},
+		{ID: "g2", Title: "argentina background", Directory: "/h/elsewhere", Project: "elsewhere", Updated: now, OpenTodos: 2},
+		{ID: "g3", Title: "carryover notes", Directory: "/p/carryover400", Project: "icampus.fei.org", Updated: now},
+	}
+	m := New(&config.Config{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: rep})
+	m.selectProject(1)
+	m.repo = 2 // moodle405, a repository of its own
+	m = drive(t, m, commitsDoneMsg{repoPath: "/p/moodle405", commits: []gitx.Commit{{Hash: "abc", Subject: "one"}}})
+	S := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("S")}
+	key := func(k string) tea.Msg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)} }
+
+	title := func() string { return m.paneSessions(m.geom()) }
+	if !strings.Contains(title(), "SESSIONS · moodle405") {
+		t.Fatalf("repo scope: %s", title())
+	}
+
+	m = drive(t, m, S)
+	if m.scope != scopeProject || !strings.Contains(title(), "SESSIONS · project") {
+		t.Fatalf("project scope: %d / %s", m.scope, title())
+	}
+	m = drive(t, m, S)
+	if m.scope != scopeAll || !strings.Contains(title(), "all projects") {
+		t.Fatalf("global scope: %d / %s", m.scope, title())
+	}
+	body := title()
+	// the global list says where each session lives, and keeps its badges
+	if !strings.Contains(body, "elsewhere") || !strings.Contains(body, "▸2") {
+		t.Fatalf("the global rows lost their project or their badge:\n%s", body)
+	}
+	// resuming one lands on the directory that session ran in, not on the
+	// repository the cursor happens to be pointing at elsewhere
+	m.cursors[paneSessions] = 1
+	m = drive(t, m, key("s"))
+	c := lastCmd(t, got)
+	if !strings.Contains(c, "--dir=/h/elsewhere") || !strings.Contains(c, "--session g2") {
+		t.Fatalf("global resume: %q", c)
+	}
+
+	// and cycling back leaves the rest of the cockpit alone
+	m = drive(t, m, S)
+	if m.scope != scopeRepo || m.repo != 2 || len(m.commits) != 1 {
+		t.Fatalf("cycling moved the selection: scope=%d repo=%d commits=%d", m.scope, m.repo, len(m.commits))
+	}
+	// a global list narrows with the same word as any other
+	m = drive(t, m, S, S) // repo -> project -> all projects
+	m.focus = paneSessions
+	m = drive(t, m, key("/"), key("themefe"))
+	if n := m.listCount(paneSessions); n != 1 {
+		t.Fatalf("global filter: %d rows", n)
+	}
+	m = drive(t, m, tea.KeyMsg{Type: tea.KeyEscape}, tea.KeyMsg{Type: tea.KeyEscape})
+	if n := m.listCount(paneSessions); n != 3 {
+		t.Fatalf("the filter outlived esc: %d rows", n)
+	}
+}
+
 // Open todos of the selected session appear in the status line while the
 // SESSIONS pane holds focus.
 func TestTodosInStatusLine(t *testing.T) {

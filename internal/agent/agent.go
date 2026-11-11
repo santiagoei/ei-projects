@@ -34,6 +34,9 @@ type Session struct {
 	// OpenTodos is how many items the session left unfinished. The scan
 	// fills it for every session of the report with one query.
 	OpenTodos int `json:"openTodos,omitempty"`
+	// Project names the watched folder the session belongs to, filled by the
+	// scan for the cross-project list.
+	Project string `json:"project,omitempty"`
 }
 
 // dbPath is opencode's data dir under XDG data home, env-overridable for tests.
@@ -156,33 +159,64 @@ func Recent(root string, limit int) ([]Session, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	table, err := sessionTable(db)
 	if err != nil {
 		return nil, err
 	}
+	if err := guardColumns(db, table); err != nil {
+		return nil, err
+	}
+	esc := strings.ReplaceAll(root, "'", "''")
+	return querySessions(db, table,
+		fmt.Sprintf("(directory = '%s' OR directory LIKE '%s' || '/%%')", esc, esc), limit)
+}
+
+// Recents is the same question across several roots at once, newest first:
+// the "where was I working" list, answered by one subprocess instead of one
+// per watched folder. The prefix rule is each root's own, and the union is
+// what the limit cuts.
+func Recents(roots []string, limit int) ([]Session, error) {
+	db, err := available()
+	if err != nil || len(roots) == 0 {
+		return nil, err
+	}
+	table, err := sessionTable(db)
+	if err != nil {
+		return nil, err
+	}
+	if err := guardColumns(db, table); err != nil {
+		return nil, err
+	}
+	conds := make([]string, 0, len(roots))
+	for _, root := range roots {
+		esc := strings.ReplaceAll(root, "'", "''")
+		conds = append(conds, fmt.Sprintf("(directory = '%s' OR directory LIKE '%s' || '/%%')", esc, esc))
+	}
+	return querySessions(db, table, strings.Join(conds, " OR "), limit)
+}
+
+func guardColumns(db, table string) error {
 	have, err := columns(db, table)
 	if err != nil {
-		return nil, ErrSchema
+		return ErrSchema
 	}
 	for _, c := range required {
 		if !have[c] {
-			return nil, ErrSchema
+			return ErrSchema
 		}
 	}
+	return nil
+}
 
-	// The sqlite3 CLI takes SQL, not bound parameters; every path is escaped
-	// the way the proven script does it (double the single quotes) and lives
-	// inside a literal of its own.
-	esc := strings.ReplaceAll(root, "'", "''")
+// querySessions is the one SELECT both readers share. The sqlite3 CLI takes
+// SQL, not bound parameters, so every literal the caller builds is escaped
+// the way the proven script does it (double the single quotes) and lives
+// inside a literal of its own.
+func querySessions(db, table, where string, limit int) ([]Session, error) {
 	q := fmt.Sprintf(
 		"SELECT id, title, directory, time_updated / 1000 AS ts, cost "+
-			"FROM %s "+
-			"WHERE parent_id IS NULL AND time_archived IS NULL "+
-			"AND (directory = '%s' OR directory LIKE '%s' || '/%%') "+
-			"ORDER BY time_updated DESC LIMIT %d;",
-		table, esc, esc, limit)
-
+			"FROM %s WHERE parent_id IS NULL AND time_archived IS NULL AND %s "+
+			"ORDER BY time_updated DESC LIMIT %d;", table, where, limit)
 	out, err := queryJSON(db, q)
 	if err != nil {
 		return nil, err

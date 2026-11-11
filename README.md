@@ -22,7 +22,7 @@ project's freshest **vault notes**. The frame lives in `## Layout` below.
 |----------|--------|------|
 | Projects | the `watchDirs` of the `ei.git-status` widget in `~/.config/omarchy/shell.json` | a read of your existing config |
 | Repos    | one `git status --porcelain=v2 --branch` per repo — branch, upstream, ahead/behind and the working tree in a single call, parallel, same guards as the panel's scanner (`--no-optional-locks`, fsmonitor off); a git older than 2.22 falls back to the three-call route | one subprocess per repo, used to be four |
-| Sessions | `~/.local/share/opencode/opencode.db` via `sqlite3 -json` — read-only first, a plain connection on a refused or mysteriously-empty read (the live db carries a WAL that can reject read-only mid-checkpoint); prefers `session_v2`, falls back to `session`, guards required columns | one subprocess |
+| Sessions | `~/.local/share/opencode/opencode.db` via `sqlite3 -json` — read-only first, a plain connection on a refused or mysteriously-empty read (the live db carries a WAL that can reject read-only mid-checkpoint); prefers `session_v2`, falls back to `session`, guards required columns. The same read once more across every watch dir gives the global scope (`allSessions`) | one subprocess per project, one for the union |
 | Todos    | the same db's `todo` table: the count of open items per session arrives with the list (one query for the whole report) and badges each row; the items themselves are read for the session under the cursor and shown in the status line | one subprocess per scan, one per selection |
 | Envs     | a `docker-compose.yml`/`compose.yaml` auto-detected at the project root (or any repo root); state via `docker compose ps --format json` | four stats + one subprocess |
 | Notes    | the vault on disk, `.md` files by mtime, matched per project by name tokens or `docsMap` | a walk |
@@ -77,7 +77,10 @@ same word to the next pane, and a pane filtered down to nothing says so. OPEN IN
 menu's keys, same letters same meaning, acting on the selected repository.
 Commits load on demand for that repo (`git log`, newest 15); sessions
 narrow to it (falling back to the project's list) and carry their open
-todos into the status line; notes are the project's freshest vault files.
+todos into the status line; `S` widens that pane to the whole project and
+then to every watched folder at once — the newest sessions anywhere, each
+row naming the project it came from, which is what "where was I working"
+actually needs. Notes are the project's freshest vault files.
 The mouse works throughout: click focuses and selects, the wheel moves
 the hovered list. `?` opens the full help.
 
@@ -114,6 +117,7 @@ Navigation (the footer bar):
 | `/` | filter the focused pane · `tab` gives the word to the next pane · `enter` keeps it and hands the keys back · `esc` clears it |
 | `enter`     | projects: to repos · repos: lazygit · commits: copy sha · sessions: resume · notes: open |
 | `s` / `d`   | resume the marked session / open the marked note  |
+| `S`         | the sessions pane: this repo · this project · everywhere |
 | `1`–`9`     | jump to project N                                 |
 | `r`         | rescan                                            |
 | `T`         | reload the Omarchy theme and the default agent    |

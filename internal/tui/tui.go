@@ -1239,6 +1239,81 @@ func (m Model) warn(p paneFocus) string {
 	return ""
 }
 
+// breadcrumb is the one line that says where the user is, whatever pane holds
+// focus. The context used to be spread over five pane titles, which meant
+// reading the whole frame to work out which repository the commits belonged
+// to. Every part is clipped while it is still plain text and the optional
+// ones drop from the right, because nothing here may soft-wrap: a wrapped
+// breadcrumb pushes the frame's top border off the screen.
+func (m Model) breadcrumb() string {
+	p := m.proj()
+	name := dim("(no project)")
+	if p.Name != "" {
+		name = accent(clip(p.Name, 26)) // clipped plain, so the row below never wraps
+	}
+	repo := ""
+	if r, ok := m.selectedRepo(); ok {
+		state := green("✓")
+		switch {
+		case r.Error != "":
+			state = red("✗ " + clip(firstLine(r.Error), 12))
+		case r.Dirty || r.Ahead > 0 || r.Behind > 0:
+			state = repoState(r)
+		}
+		repo = dim(" › ") +
+			lipgloss.NewStyle().Bold(true).Foreground(pal().fg).Render(clip(filepath.Base(r.Path), 22)) +
+			dim(" · ") + clip(r.Branch, 18) + dim(" · ") + state
+	}
+	tail := ""
+	if up, total := m.envUp(); total > 0 {
+		tail += dim(" · env ") + green(fmt.Sprintf("%d/%d", up, total))
+	}
+	if n := len(p.Repos); n > 0 {
+		tail += dim(fmt.Sprintf(" · %d repos", n))
+	}
+	if n := len(p.Notes); n > 0 {
+		tail += dim(fmt.Sprintf(" · %d notes", n))
+	}
+	right := ""
+	if !m.scannedAt.IsZero() {
+		right = dim("scanned " + shortAge(m.scannedAt))
+	}
+
+	// Nothing here is ever clipped after it is styled -- that would cut an
+	// escape sequence in half and paint garbage for a row. The segments are
+	// dropped instead, least important first, and what is left standing is
+	// short enough by construction to fit the narrowest window the cockpit
+	// accepts (60 columns), because each piece was clipped as plain text.
+	fits := func(s string) bool { return lipgloss.Width(s+right) <= m.width }
+	bare := lipgloss.NewStyle().Foreground(pal().faint)
+	switch {
+	case fits(name + repo + tail):
+	case fits(name + repo):
+		tail = ""
+	case fits(name):
+		repo, tail = "", ""
+	case m.width >= 8:
+		name, repo, tail, right = bare.Render(clip(shortPath(p.Path), m.width-7)), "", "", ""
+	default:
+		name, repo, tail, right = "", "", "", ""
+	}
+	// the row is exactly as wide as the frame below it, same as the status
+	// line: the two are read as one block
+	return name + repo + tail +
+		strings.Repeat(" ", max(1, m.width-lipgloss.Width(name+repo+tail)-lipgloss.Width(right))) + right
+}
+
+// envUp is the compose pane's headline answer -- how many of what is defined
+// are actually running -- shared by the pane title and the breadcrumb.
+func (m Model) envUp() (up, total int) {
+	for _, s := range m.envSvcs {
+		if s.State == "running" {
+			up++
+		}
+	}
+	return up, len(m.envSvcs)
+}
+
 // -------------------------------------------------------------- view
 
 // every style reads the palette through functions so the (theme) values
@@ -1310,9 +1385,9 @@ func (m Model) View() string {
 	frame := lipgloss.JoinHorizontal(lipgloss.Top, left,
 		lipgloss.JoinVertical(lipgloss.Left, right...))
 
-	status := m.statusLine()
-	legend := m.legend()
-	return frame + "\n" + status + "\n" + legend
+	// breadcrumb on top, frame, then the two lines that read the frame: the
+	// status (an action, a filter, a session's open items) and the keys
+	return m.breadcrumb() + "\n" + frame + "\n" + m.statusLine() + "\n" + m.legend()
 }
 
 // legend is the app shortcut bar along the bottom. It says less when there is
@@ -1478,10 +1553,8 @@ func (m Model) paneRepos(g geom) string {
 	if len(lines) == 0 {
 		lines = []string{m.emptyNote(paneRepos, "(no repositories)", inner)}
 	}
+	// the project it belongs to is on the breadcrumb, not repeated here
 	title := "REPOSITORIES"
-	if n := m.proj().Name; n != "" {
-		title += " · " + n
-	}
 	return pane(m.focus == paneRepos, title+m.filterMark(paneRepos), w, h,
 		listWindow(lines, m.selectedIndex(paneRepos), h-2, inner))
 }
@@ -1530,17 +1603,13 @@ func openInBody(innerW int) (string, int) {
 }
 
 // openInTitle carries the repo the launchers act on.
+// openInTitle names the repository the launchers act on. The branch and the
+// dirty count it used to repeat are on the breadcrumb, and reading them twice
+// in one screen is how a title ends up clipped.
 func (m Model) openInTitle(w int) string {
 	title := "OPEN IN"
 	if repo, ok := m.selectedRepo(); ok {
-		state := "clean"
-		if repo.Error != "" {
-			state = "error"
-		} else if repo.Dirty {
-			state = fmt.Sprintf("dirty %d", repo.Changes)
-		}
-		title = fmt.Sprintf("OPEN IN · %s · %s · %s",
-			filepath.Base(repo.Path), repo.Branch, state)
+		title += " · " + filepath.Base(repo.Path)
 	}
 	return clip(title, w-6)
 }
@@ -1625,10 +1694,10 @@ func (m Model) paneCommits(g geom) string {
 	case !ok:
 		lines = []string{dim("(no repository selected)")}
 	case m.commitsFor != repo.Path:
-		title = clip("COMMITS · "+repo.Branch, inner)
+		title = "COMMITS"
 		lines = []string{m.spinner.View() + dim(" loading…")}
 	default:
-		title = clip(fmt.Sprintf("COMMITS · %s · %d", repo.Branch, len(m.commits))+m.filterMark(paneCommits), inner)
+		title = clip(fmt.Sprintf("COMMITS · %d", len(m.commits))+m.filterMark(paneCommits), inner)
 		for pos, it := range m.visible(paneCommits) {
 			c := m.commits[it.idx]
 			// hash | subject | author | age: fixed visible columns
@@ -1861,16 +1930,11 @@ func (m Model) statusLine() string {
 			left = dim(clip(shortPath(m.proj().Path), m.width/2))
 		}
 	}
+	// only the spinner shares the status line: the timestamp it used to carry
+	// lives in the breadcrumb, and "? help" is in the legend
 	right := ""
 	if m.loading || m.commitsLoading || (m.envLoading && !m.envFetched) {
 		right = m.spinner.View()
-	} else if !m.scannedAt.IsZero() {
-		age := shortAge(m.scannedAt)
-		if age == "now" {
-			right = dim("scanned now · ? help")
-		} else {
-			right = dim("scanned " + age + " ago · ? help")
-		}
 	}
 	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if pad < 1 {

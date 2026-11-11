@@ -921,6 +921,46 @@ func TestSessionsScopeCycles(t *testing.T) {
 	}
 }
 
+// The context line says where the user is whatever pane holds focus, and it
+// costs the frame no border: at every window size it stays ONE row, which is
+// what the segment-dropping (never styled-string clipping) is for.
+func TestBreadcrumbCarriesContext(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	rep := testReport()
+	rep.Projects[1].EnvFile = "/p/icampus.fei.org/docker-compose.yml"
+	m := New(&config.Config{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: rep})
+	m.selectProject(1)
+	m.repo = 2
+
+	line := m.breadcrumb()
+	for _, want := range []string{"icampus.fei.org", "moodle405", "master", "●3", "↑2"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("the breadcrumb lost %q:\n%s", want, line)
+		}
+	}
+	if strings.Contains(line, "\n") {
+		t.Fatalf("a wrapping breadcrumb eats the frame's top border:\n%s", line)
+	}
+
+	for _, w := range []int{60, 64, 70, 80, 100, 140, 300} {
+		m.width = w
+		got := m.breadcrumb()
+		if strings.Contains(got, "\n") {
+			t.Fatalf("%d columns: the row wrapped: %q", w, got)
+		}
+		if n := lipgloss.Width(got); n > w {
+			t.Fatalf("%d columns: the breadcrumb is %d wide: %q", w, n, got)
+		}
+	}
+	// nothing selected at all still says something
+	m = drive(t, New(&config.Config{}), tea.WindowSizeMsg{Width: 150, Height: 40})
+	if got := m.breadcrumb(); !strings.Contains(got, "no project") {
+		t.Fatalf("empty cockpit: %q", got)
+	}
+}
+
 // Open todos of the selected session appear in the status line while the
 // SESSIONS pane holds focus.
 func TestTodosInStatusLine(t *testing.T) {

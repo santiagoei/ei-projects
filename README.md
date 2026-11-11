@@ -35,21 +35,35 @@ its pane title, a quiet one explains itself while it holds focus.
 ## Layout (lazygit-shaped)
 
 ```
-╭─ PROJECTS · 4 ──────────╮╭─ OPEN IN · repo · main · dirty 3 ──────╮
-│> 1 xxxx    (1)          ││g lazygit · t terminal · c code · a …   │
-│  2 xxxx     (1)         │╰────────────────────────────────────────╯
-│  3 xxxx                 │╭─ COMMITS · main · 15 ──────────────────╮
-│  4 xxxx                 ││> 97d5fe3 Move files    santiago · 10m  │
-╰─────────────────────────╯│  82cde26 Audit +     santiago · 1h     │
-╭─ REPOSITORIES · proj ───╮╰────────────────────────────────────────╯
-│> xxxxxxxxx   ↑2         │╭─ SESSIONS · repo · 20 ─────────────────╮
-╰─────────────────────────╯│> Auditoría y curaduría 7d · $0.10      │
+obsidian › theme_fei4 · main · ●3 ↑2 · env 2/4 · 6 repos scanned 30s
+╭─ PROJECTS · 4 ──────────╮╭─ OPEN IN · theme_fei4 ─────────────────╮
+│  1 xxxx       ●1        ││g lazygit · t terminal · c code · a …   │
+│> 2 yyyy       ✓         │╰────────────────────────────────────────╯
+╰─────────────────────────╯╭─ COMMITS · 15 ─────────────────────────╮
+╭─ REPOSITORIES ──────────╮│> 97d5fe3 Move files  santiago 10m┃     │
+│> theme_fei4  ●3 ↑2      ││  82cde26 Audit +   santiago   1h┃      │
+│  www         ✓          │╰────────────────────────────────────────╯
+│  moodledev   ✗          │╭─ SESSIONS · repo · 20 · 3 open ────────╮
+╰─────────────────────────╯│> Auditoría y curaduría ▸3 7d $0.10     │
+                           │  Retomar pendientes  ▸1 2d $0.64       │
                            ╰────────────────────────────────────────╯
                            ╭─ NOTES · 5 ────────────────────────────╮
-                           │> 30 areas/area.linux.md     26m        │
+                           │> 30 areas/area.linux.md      26m       │
                            ╰────────────────────────────────────────╯
-tab/h/l panes · ↑/↓ move · enter act · 1-9 project · s session · d note · ? help · r rescan · q quit
+⌕ moo · repos · 2/6
+tab/h/l panes · ↑/↓ move · enter act · 1-9 project · s/d act · S scope · / filter
+· ? help · r rescan · T theme · q quit
 ```
+
+Above the frame, one breadcrumb line carries the whole context — project ›
+repository · branch · what is dirty, ahead or behind, plus the env, repo and
+note counts and the age of the scan — so no matter which pane holds focus,
+the answer to "where am I?" is on screen once instead of five. Panes lost
+that repetition from their titles when it arrived.
+
+Below the frame, the status line carries the last action (four seconds, then
+it steps aside), a filter in progress, or the open todos of the session under
+the cursor; the legend is the key bar.
 
 The legend along the bottom is conditional: `pgup/dn · home/end` appear only
 while the focused pane has more rows than it can paint, and the ENV pane's

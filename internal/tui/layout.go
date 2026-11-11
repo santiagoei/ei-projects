@@ -46,9 +46,10 @@ func (m Model) geom() geom {
 	g := geom{}
 	g.leftW = clamp(m.width*36/100, 30, 52)
 	g.rightW = m.width - g.leftW
-	// body + status + legend + one spare row for the cursor: a frame that
-	// ends on the last terminal row makes the renderer scroll away the top
-	g.bodyH = m.height - 3
+	// breadcrumb + status + legend + one spare row for the cursor: a frame
+	// that ends on the last terminal row makes the renderer scroll away the
+	// top border
+	g.bodyH = m.height - 4
 
 	g.projH = clamp(m.height*42/100, 7, g.bodyH-7)
 	g.repoH = g.bodyH - g.projH

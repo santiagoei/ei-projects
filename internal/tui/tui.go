@@ -14,12 +14,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/santiagoei/ei-projects/internal/actions"
 	"github.com/santiagoei/ei-projects/internal/agent"
@@ -1269,10 +1271,10 @@ func (m Model) breadcrumb() string {
 		tail += dim(" · env ") + green(fmt.Sprintf("%d/%d", up, total))
 	}
 	if n := len(p.Repos); n > 0 {
-		tail += dim(fmt.Sprintf(" · %d repos", n))
+		tail += dim(" · " + plural(n, "repo"))
 	}
 	if n := len(p.Notes); n > 0 {
-		tail += dim(fmt.Sprintf(" · %d notes", n))
+		tail += dim(" · " + plural(n, "note"))
 	}
 	right := ""
 	if !m.scannedAt.IsZero() {
@@ -1440,22 +1442,42 @@ func (m Model) legend() string {
 	for _, k := range append(keys, tail...) {
 		parts = append(parts, keyStyle(k.key)+dim(" "+k.label))
 	}
-	line := strings.Join(parts, dim(" · "))
-	if lipgloss.Width(line) > m.width {
-		line = strings.Join(parts[:5], dim(" · "))
+	// Every part carries its own separator, so the row is the plain sum of
+	// what is kept: no soft wrap, no lost border. The bar keeps only what fits
+	// and says so with an ellipsis -- blindly keeping five keys used to be
+	// sixty-four columns in a sixty-column window.
+	sep, ell := dim(" · "), dim("…")
+	glue := lipgloss.Width(sep)
+	kept, used := []string{}, 0
+	for _, part := range parts {
+		w := lipgloss.Width(part) + glue
+		if used+w > m.width {
+			if m.width-used-glue >= lipgloss.Width(ell) {
+				kept = append(kept, sep+ell)
+			}
+			break
+		}
+		kept = append(kept, sep+part)
+		used += w
 	}
-	return line
+	if len(kept) == 0 { // not even one key fits: the hint beats an empty row
+		return ell
+	}
+	return strings.Join(kept, "")
 }
 
 // pane renders a bordered box whose title sits ON the top border line --
-// "╭─ COMMITS · main ──────" lazygit-style -- so the title costs no
-// content row. The border characters are the only thing on that row, so
-// the whole line is rewritten in the pane's border color.
+// "╭─ COMMITS ──────" lazygit-style -- so the title costs no content row.
+// The border characters are the only thing on that row, so the whole line is
+// rewritten in the pane's border colour, and the active pane swaps the corner
+// dash for a ▶: colour alone made the focused pane hard to find in a frame of
+// six, and a marker costs nothing when it replaces a character that was
+// already there.
 func pane(active bool, title string, w, h int, body string) string {
 	p := pal()
-	fg := p.faint
+	fg, corner := p.faint, "╭─ "
 	if active {
-		fg = p.accent
+		fg, corner = p.accent, "╭▶ "
 	}
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -1463,15 +1485,14 @@ func pane(active bool, title string, w, h int, body string) string {
 		Width(w - 2).Height(h - 2)
 	lines := strings.Split(box.Render(body), "\n")
 	if len(lines) > 0 {
-		t := clip(title, w-6)
-		prefix := "╭─ "
-		// prefix + title + " " + fill + "╮" must be exactly w wide
-		fill := w - lipgloss.Width(prefix) - lipgloss.Width(t) - 2
+		t := cut(title, w-6)
+		// corner + title + " " + fill + "╮" must be exactly w wide
+		fill := w - lipgloss.Width(corner) - lipgloss.Width(t) - 2
 		if fill < 1 {
 			fill = 1
 		}
 		base := lipgloss.NewStyle().Foreground(fg)
-		lines[0] = base.Render(prefix) + base.Bold(true).Render(t) +
+		lines[0] = base.Render(corner) + base.Bold(true).Render(t) +
 			base.Render(" "+strings.Repeat("─", fill)+"╮")
 	}
 	return strings.Join(lines, "\n")
@@ -1496,25 +1517,95 @@ func (m Model) paneProjects(g geom) string {
 	w, h := g.leftW, g.projH
 	inner := w - 4
 	var lines []string
+	// the badge gets at least "missing" columns, so no row can ever overflow
+	// the pane it is painted in (the box grows instead of clipping, and a
+	// frame one column too wide loses its border)
+	badgeW := max(7, min(12, inner/3))
 	for pos, it := range m.visible(paneProjects) {
 		p := m.report.Projects[it.idx]
-		label := fmt.Sprintf("%d %s", pos+1, clip(p.Name, inner-14))
-		switch {
-		case p.Missing:
-			label = padR(label, inner-9) + red("missing")
-		case p.Pending > 0:
-			label = padR(label, inner-6) + orange(fmt.Sprintf("●%d", p.Pending))
-		default:
-			label = padR(label, inner-3) + green("✓")
-		}
+		label := padR(fmt.Sprintf("%d %s", pos+1, clip(p.Name, inner-badgeW-3)), inner-badgeW) +
+			projectBadge(p, badgeW)
 		lines = append(lines, m.fillRow(paneProjects, "> "+label, it.idx == m.project, inner))
 	}
 	if len(lines) == 0 {
 		lines = []string{m.emptyNote(paneProjects, "(no projects)", inner)}
 	}
-	title := fmt.Sprintf("PROJECTS · %d", len(m.report.Projects)) + m.filterMark(paneProjects)
+	pending := 0
+	for _, p := range m.report.Projects {
+		pending += p.Pending
+	}
+	title := fmt.Sprintf("PROJECTS · %d", len(m.report.Projects))
+	if pending > 0 {
+		title += orange(fmt.Sprintf(" · ●%d", pending))
+	}
+	title += m.filterMark(paneProjects)
 	return pane(m.focus == paneProjects, title, w, h,
 		listWindow(lines, m.selectedIndex(paneProjects), h-2, inner))
+}
+
+// projectBadge is a whole project in a handful of columns: one glyph per
+// repository, so what everything is doing is readable without walking into
+// each. The run is capped and the remainder becomes "+n", because a project
+// with thirty repositories must not push its own name off the row.
+func projectBadge(p scan.Project, budget int) string {
+	switch {
+	case p.Missing:
+		return red("missing")
+	case len(p.Repos) == 0:
+		return dim("—")
+	}
+	shown := min(len(p.Repos), max(1, budget))
+	for shown > 1 && shown+suffixLen(len(p.Repos)-shown) > budget {
+		shown--
+	}
+	var out strings.Builder
+	for _, r := range p.Repos[:shown] {
+		switch {
+		case r.Error != "":
+			out.WriteString(red("✗"))
+		case r.Dirty:
+			out.WriteString(orange("●"))
+		case r.Ahead > 0:
+			out.WriteString(green("↑"))
+		case r.Behind > 0:
+			out.WriteString(cyan("↓"))
+		default:
+			out.WriteString(dim("✓"))
+		}
+	}
+	if rest := len(p.Repos) - shown; rest > 0 {
+		out.WriteString(dim(fmt.Sprintf("+%d", rest)))
+	}
+	return out.String()
+}
+
+// plural is the one count a row is allowed to get wrong-looking: "1 repos"
+// reads like a bug even when the number is right.
+func plural(n int, word string) string {
+	if n == 1 {
+		return "1 " + word
+	}
+	return fmt.Sprintf("%d %ss", n, word)
+}
+
+// suffixLen is the width of the "+n" that says how many rows the badge could
+// not show.
+func suffixLen(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return 1 + len(strconv.Itoa(n))
+}
+
+// ageCell is a timestamp that recedes when it is old. Everything being the
+// same grey is everything shouting, and "what did I touch today" should be
+// answerable by contrast before it is answerable by reading a number.
+func ageCell(t time.Time, staleAfter time.Duration) string {
+	s := padL(shortAge(t), 5)
+	if !t.IsZero() && time.Since(t) > staleAfter {
+		return dim(s)
+	}
+	return lipgloss.NewStyle().Foreground(pal().fg).Render(s)
 }
 
 // repoState is the coloured status suffix for one repository. The widest
@@ -1703,7 +1794,7 @@ func (m Model) paneCommits(g geom) string {
 			// hash | subject | author | age: fixed visible columns
 			line := accent(clip(c.Hash, 9)) + " " +
 				padR(clip(c.Subject, inner-36), inner-36) +
-				dim(padL(clip(c.Author, 14), 15)+padL(shortAge(c.When), 5))
+				dim(padL(clip(c.Author, 14), 15)) + ageCell(c.When, 30*24*time.Hour)
 			lines = append(lines, m.fillRow(paneCommits, "> "+line, pos == m.cursors[paneCommits], inner))
 		}
 		if len(lines) == 0 {
@@ -1772,7 +1863,7 @@ func (m Model) paneSessions(g geom) string {
 		if m.scope == scopeAll && s.Project != "" {
 			from = dim(" " + clip(s.Project, 10))
 		}
-		meta := dim(padL(shortAge(s.Updated), 5) + " " + padL(fmt.Sprintf("$%.2f", s.Cost), 6))
+		meta := ageCell(s.Updated, 7*24*time.Hour) + dim(" "+padL(fmt.Sprintf("$%.2f", s.Cost), 6))
 		free := max(1, inner-lipgloss.Width(meta)-lipgloss.Width(badge)-lipgloss.Width(from)-2)
 		line := padR(clip(s.Title, free), free) + badge + from + meta
 		lines = append(lines, m.fillRow(paneSessions, "> "+line, pos == m.cursors[paneSessions], inner))
@@ -1792,7 +1883,7 @@ func (m Model) paneNotes(g geom) string {
 	var lines []string
 	for pos, it := range m.visible(paneNotes) {
 		n := notes[it.idx]
-		meta := dim(padL(shortAge(n.Modified), 5))
+		meta := ageCell(n.Modified, 30*24*time.Hour)
 		line := padR(clip(n.Rel, inner-lipgloss.Width(meta)-2), inner-lipgloss.Width(meta)-2) + meta
 		lines = append(lines, m.fillRow(paneNotes, "> "+line, pos == m.cursors[paneNotes], inner))
 	}
@@ -2111,6 +2202,20 @@ func shortAge(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
+}
+
+// cut is clip for text that may already be styled: a pane title carries an
+// accent count of its own, and slicing it by runes would cut an escape
+// sequence in half and paint garbage for the rest of the row. This is the same
+// measurement lipgloss itself renders with, so what fits is what shows.
+func cut(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= n {
+		return s
+	}
+	return ansi.Truncate(s, n, "…")
 }
 
 func clip(s string, n int) string {

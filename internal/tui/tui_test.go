@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/santiagoei/ei-projects/internal/agent"
 	"github.com/santiagoei/ei-projects/internal/config"
@@ -958,6 +959,138 @@ func TestBreadcrumbCarriesContext(t *testing.T) {
 	m = drive(t, New(&config.Config{}), tea.WindowSizeMsg{Width: 150, Height: 40})
 	if got := m.breadcrumb(); !strings.Contains(got, "no project") {
 		t.Fatalf("empty cockpit: %q", got)
+	}
+}
+
+// A row is one row: the key bar keeps what the window has room for, marks the
+// rest with an ellipsis, and never soft-wraps -- a wrapped bottom bar costs the
+// frame its top border, which is the bug the whole layout section is written
+// around.
+func TestLegendNeverWraps(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	for _, w := range []int{40, 60, 70, 90, 120, 200} {
+		for _, f := range []paneFocus{paneProjects, paneRepos, paneCommits, paneSessions, paneNotes, paneEnv} {
+			m := drive(t, New(&config.Config{}), tea.WindowSizeMsg{Width: w, Height: 30})
+			m = drive(t, m, scanDoneMsg{report: testReport()})
+			m.focus = f
+			l := m.legend()
+			if strings.Contains(l, "\n") {
+				t.Fatalf("%d wide, pane %d: the bar wrapped: %q", w, f, l)
+			}
+			if n := lipgloss.Width(l); n > w {
+				t.Fatalf("%d wide, pane %d: the bar is %d: %q", w, f, n, l)
+			}
+		}
+	}
+	m := drive(t, New(&config.Config{}), tea.WindowSizeMsg{Width: 240, Height: 30})
+	m = drive(t, m, scanDoneMsg{report: testReport()})
+	if l := m.legend(); strings.Contains(l, "…") {
+		t.Fatalf("a wide window truncated the bar: %q", l)
+	}
+}
+
+// cut is the clip that survives style, and pane titles need it: they now carry
+// an accent count inside their own escape sequences, and slicing one of those
+// in half paints garbage for the rest of the row. Styles are forced on so this
+// test says something the plain-text renderer would pass by accident.
+func TestCutKeepsSequencesBalanced(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	// lipgloss keeps the profile in a package global, and every other test in
+	// this file asserts on plain rendered text: hand it back stripped.
+	t.Cleanup(func() {
+		lipgloss.DefaultRenderer().SetColorProfile(termenv.Ascii)
+		lipgloss.SetColorProfile(termenv.Ascii)
+	})
+
+	styled := accent("PROJECTS") + dim(" · 4 · ") + orange("●12")
+	if !strings.Contains(styled, "\x1b[") {
+		t.Fatalf("styles produced no escapes at all: %q", styled)
+	}
+	got := cut(styled, 12)
+	if n := lipgloss.Width(got); n > 12 {
+		t.Fatalf("cut left %d columns: %q", n, got)
+	}
+	if opens := strings.Count(got, "\x1b["); opens != strings.Count(got, "m") {
+		t.Fatalf("unbalanced escapes: %q", got)
+	}
+	// nothing is left holding a colour the terminal will never close
+	if strings.Contains(got, "\x1b[") && !strings.HasSuffix(got, "\x1b[0m") {
+		t.Fatalf("the truncated tail never resets: %q", got)
+	}
+}
+
+// The projects pane shows a whole project at a glance, and the focused pane is
+// marked in its border rather than only in its colour.
+func TestProjectRowsAndActiveBorder(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	rep := scan.Report{Projects: []scan.Project{
+		{Name: "many", Path: "/m", Pending: 2, Repos: func() []gitx.Repo {
+			var rs []gitx.Repo
+			for i := range 6 {
+				r := gitx.Repo{Path: fmt.Sprintf("/m/r%d", i), Branch: "main"}
+				switch i % 3 {
+				case 0:
+					r.Dirty, r.Changes, r.Pending = true, 2, true
+				case 1:
+					r.Ahead = 1
+					r.Pending = true
+				}
+				rs = append(rs, r)
+			}
+			return rs
+		}()},
+		{Name: "bare", Path: "/b"},
+		{Name: "gone", Path: "/g", Missing: true},
+	}}
+	m := New(&config.Config{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: rep})
+
+	body := m.paneProjects(m.geom())
+	// one glyph per repository, in the order they are listed
+	if !strings.Contains(body, "●↑✓●↑✓") {
+		t.Fatalf("the glyph run never landed:\n%s", body)
+	}
+	if !strings.Contains(body, "missing") || !strings.Contains(body, "—") {
+		t.Fatalf("a missing or empty project lost its badge:\n%s", body)
+	}
+	// the pending total moved from the row to the title
+	if !strings.Contains(body, "PROJECTS · 3") || !strings.Contains(body, "●2") {
+		t.Fatalf("the title carries no pending count:\n%s", body)
+	}
+	// the active pane is the one with the corner marker
+	if !strings.Contains(body, "╭▶ PROJECTS") {
+		t.Fatal("the focused pane is not marked")
+	}
+	if s := m.paneNotes(m.geom()); strings.Contains(s, "╭▶") {
+		t.Fatal("a quiet pane marked itself active")
+	}
+
+	// a project with more repositories than the badge has columns says how
+	// many it could not show, and no row overruns the pane it lives in
+	wide := scan.Report{Projects: []scan.Project{{Name: "many", Path: "/m",
+		Repos: func() []gitx.Repo {
+			var rs []gitx.Repo
+			for i := range 40 {
+				rs = append(rs, gitx.Repo{Path: fmt.Sprintf("/m/r%d", i), Dirty: i%3 == 0, Changes: 1})
+			}
+			return rs
+		}()}}}
+	for _, size := range []struct{ w, h int }{{80, 24}, {150, 40}, {60, 22}} {
+		wm := drive(t, New(&config.Config{}), tea.WindowSizeMsg{Width: size.w, Height: size.h})
+		wm = drive(t, wm, scanDoneMsg{report: wide})
+		view := wm.View()
+		if n := strings.Count(view, "\n") + 1; n > size.h-1 {
+			t.Fatalf("%dx%d: %d lines\n%s", size.w, size.h, n, view)
+		}
+		for _, line := range strings.Split(view, "\n") {
+			if got := lipgloss.Width(line); got > size.w {
+				t.Fatalf("%dx%d: a row is %d wide: %q", size.w, size.h, got, line)
+			}
+		}
+		if !strings.Contains(wm.paneProjects(wm.geom()), "+") {
+			t.Fatal("forty repositories and no remainder marker")
+		}
 	}
 }
 

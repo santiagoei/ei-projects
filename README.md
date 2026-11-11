@@ -36,21 +36,22 @@ its pane title, a quiet one explains itself while it holds focus.
 
 ```
 obsidian › theme_fei4 · main · ●3 ↑2 · env 2/4 · 6 repos scanned 30s
-╭─ PROJECTS · 4 ──────────╮╭─ OPEN IN · theme_fei4 ─────────────────╮
-│  1 xxxx       ●1        ││g lazygit · t terminal · c code · a …   │
-│> 2 yyyy       ✓         │╰────────────────────────────────────────╯
+╭▶ PROJECTS · 4 · ●3 ─────╮╭─ OPEN IN · theme_fei4 ─────────────────╮
+│> 1 xxxx        ●↑✓      ││g lazygit · t terminal · c code · a …   │
+│  2 yyyy        ✓✓+12    │╰────────────────────────────────────────╯
 ╰─────────────────────────╯╭─ COMMITS · 15 ─────────────────────────╮
 ╭─ REPOSITORIES ──────────╮│> 97d5fe3 Move files  santiago 10m┃     │
-│> theme_fei4  ●3 ↑2      ││  82cde26 Audit +   santiago   1h┃      │
-│  www         ✓          │╰────────────────────────────────────────╯
-│  moodledev   ✗          │╭─ SESSIONS · repo · 20 · 3 open ────────╮
+│> theme_fei4   ●3 ↑2     ││  82cde26 Audit +   santiago  16d┃      │
+│  www          ✓         │╰────────────────────────────────────────╯
+│  moodledev    ✗         │╭─ SESSIONS · repo · 20 · 3 open ────────╮
 ╰─────────────────────────╯│> Auditoría y curaduría ▸3 7d $0.10     │
                            │  Retomar pendientes  ▸1 2d $0.64       │
                            ╰────────────────────────────────────────╯
-                           ╭─ NOTES · 5 ────────────────────────────╮
+                           ╭─ NOTES · 5 · ⌕ ────────────────────────╮
                            │> 30 areas/area.linux.md      26m       │
+                           │  80 resources/ia.linux.md     3d       │
                            ╰────────────────────────────────────────╯
-⌕ moo · repos · 2/6
+⌕ linux · notes · 2/5
 tab/h/l panes · ↑/↓ move · enter act · 1-9 project · s/d act · S scope · / filter
 · ? help · r rescan · T theme · q quit
 ```
@@ -94,14 +95,19 @@ narrow to it (falling back to the project's list) and carry their open
 todos into the status line; `S` widens that pane to the whole project and
 then to every watched folder at once — the newest sessions anywhere, each
 row naming the project it came from, which is what "where was I working"
-actually needs. Notes are the project's freshest vault files.
+actually needs. Notes are the project's freshest vault files. Each project
+row is a glyph per repository (`●` dirty `↑` ahead `↓` behind `✓` clean
+`✗` unreadable, `+n` for what did not fit) instead of one count, and every
+timestamp recedes when it is old — recent work is the thing worth seeing
+first, so it gets the contrast instead of an equal share of grey.
 The mouse works throughout: click focuses and selects, the wheel moves
 the hovered list. `?` opens the full help.
 
 Colours come from the active Omarchy theme
 (`~/.local/state/omarchy/current/theme/colors.toml`): the accent paints
-the active pane's border and the selected-row bar is the theme's own
-selection colour, so the cockpit reads as part of the desktop. `T` reads
+the active pane's border — whose corner turns into a `▶`, because colour
+alone was not enough to find the focused pane in a frame of six — and the
+selected-row bar is the theme's own selection colour, so the cockpit reads as part of the desktop. `T` reads
 that file again after `omarchy theme set`, along with the configured
 default agent, so neither needs a restart. The last seat is remembered
 under the XDG state dir — project and repo by path (not index: the watched

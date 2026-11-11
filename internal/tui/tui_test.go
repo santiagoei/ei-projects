@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -302,7 +303,8 @@ func TestCursorPositionsResolveToRows(t *testing.T) {
 	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
 	m = drive(t, m, scanDoneMsg{report: rep})
 	m.selectProject(1)
-	m = drive(t, m, commitsDoneMsg{repoPath: m.proj().Repos[1].Path, commits: []gitx.Commit{
+	m.envSvcs = []env.Service{{Name: "web", State: "running"}}
+	m = drive(t, m, commitsDoneMsg{repoPath: m.proj().Repos[0].Path, commits: []gitx.Commit{
 		{Hash: "97d5fe3", Subject: "Move files", Author: "santiago"},
 		{Hash: "82cde26", Subject: "Audit", Author: "santiago"},
 	}})
@@ -361,6 +363,71 @@ func TestCursorPositionsResolveToRows(t *testing.T) {
 	m = nm.(Model)
 	if m.focus != before {
 		t.Fatal("moving another pane stole the focus")
+	}
+}
+
+// Paging jumps by the rows a pane can actually show, not by the window: a
+// list pane is a handful of rows tall, and a window-sized jump would fly past
+// its end and land clamped without the user seeing why.
+func TestPageKeysMoveByVisibleRows(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	var commits []gitx.Commit
+	for i := range 15 {
+		commits = append(commits, gitx.Commit{Hash: fmt.Sprintf("%07x", i),
+			Subject: fmt.Sprintf("commit %d", i), Author: "santiago"})
+	}
+
+	m := New(&config.Config{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: testReport()})
+	m.selectProject(1)
+	m.repo = 1 // the commits reply is race-guarded on the repo it was asked for
+	m = drive(t, m, commitsDoneMsg{repoPath: m.proj().Repos[1].Path, commits: commits})
+	m.focus = paneCommits
+
+	rows, n := m.geom().innerH(paneCommits), m.listCount(paneCommits)
+	if n <= rows {
+		t.Fatalf("the fixture must overflow the pane to page it: %d rows shown, %d commits", rows, n)
+	}
+	page := func(t tea.KeyType) tea.Msg { return tea.KeyMsg{Type: t} }
+
+	m = drive(t, m, page(tea.KeyPgDown))
+	if got := m.cursors[paneCommits]; got != rows {
+		t.Fatalf("pgdown moved %d, want a page of %d", got, rows)
+	}
+	m = drive(t, m, page(tea.KeyPgUp))
+	if m.cursors[paneCommits] != 0 {
+		t.Fatalf("pgup did not come back: %d", m.cursors[paneCommits])
+	}
+	m = drive(t, m, page(tea.KeyEnd))
+	if m.cursors[paneCommits] != n-1 {
+		t.Fatalf("end: %d, want %d", m.cursors[paneCommits], n-1)
+	}
+	m = drive(t, m, page(tea.KeyHome))
+	if m.cursors[paneCommits] != 0 {
+		t.Fatalf("home: %d", m.cursors[paneCommits])
+	}
+	m = drive(t, m, tea.KeyMsg{Type: tea.KeyCtrlD})
+	if half := m.cursors[paneCommits]; half != max(1, rows/2) {
+		t.Fatalf("ctrl+d: %d, want half of %d", half, rows)
+	}
+	// and the legend offers the page keys only to a pane that needs them
+	if !strings.Contains(m.legend(), "pgup/dn") {
+		t.Fatal("an overflowing pane should advertise paging")
+	}
+	m.focus = paneProjects
+	if strings.Contains(m.legend(), "pgup/dn") {
+		t.Fatal("a pane that fits should not")
+	}
+	// paging an empty pane is a no-op, not a panic
+	m = drive(t, m, scanDoneMsg{report: scan.Report{Projects: []scan.Project{{Name: "empty", Path: "/e"}}}})
+	m.focus = paneCommits
+	m = drive(t, m, page(tea.KeyPgDown), page(tea.KeyEnd))
+	if m.listCount(paneCommits) != 0 {
+		t.Fatalf("a new project must drop the old repo's history: %d rows", m.listCount(paneCommits))
+	}
+	if m.cursors[paneCommits] != 0 {
+		t.Fatalf("empty pane moved: %d", m.cursors[paneCommits])
 	}
 }
 

@@ -50,6 +50,10 @@ degrade the UI instead of failing it.
 tab/h/l panes · ↑/↓ move · enter act · 1-9 project · s session · d note · ? help · r rescan · q quit
 ```
 
+The legend along the bottom is conditional: `pgup/dn · home/end` appear only
+while the focused pane has more rows than it can paint, and the ENV pane's
+compose verbs replace the whole bar while it holds focus.
+
 Six focusable panes — projects, repos, the conditional **ENV** (shown
 only while the selected project has a docker environment), commits,
 sessions, notes — tab, or a click, walks them, titles sitting on the
@@ -87,6 +91,7 @@ Navigation (the footer bar):
 |-------------|---------------------------------------------------|
 | `tab` `l` `→` / `h` `←` `esc` | cycle the panes: projects → repos → (env) → commits → sessions → notes (`esc` at projects quits) |
 | `↑/↓` `j/k` | move within the focused pane                      |
+| `pgup/pgdn` `home/end` `ctrl+u/d` | page, jump to first/last, half page — by the rows the pane paints, not the window's |
 | `enter`     | projects: to repos · repos: lazygit · commits: copy sha · sessions: resume · notes: open |
 | `s` / `d`   | resume the marked session / open the marked note  |
 | `1`–`9`     | jump to project N                                 |

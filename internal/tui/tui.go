@@ -461,6 +461,18 @@ func (m *Model) commitSelection() tea.Cmd {
 	return tea.Batch(m.commitsCmd(), m.todosCmd(), m.envCmd())
 }
 
+// afterSelection is what a report swap owes the cursors. The order is the
+// point: the feeds refresh first (walking onto a project with no repos
+// empties the old repo's history), and only then can every cursor be parked
+// inside the rows that survived -- clamping before the emptying left a cursor
+// standing on row six of a list that no longer has one.
+func (m *Model) afterSelection() tea.Cmd {
+	m.clampCursors()
+	cmd := m.commitSelection()
+	m.clampCursors()
+	return cmd
+}
+
 // -------------------------------------------------------------- update
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -483,8 +495,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selectByPath(p, r)
 			}
 		}
-		m.clampCursors()
-		return m, tea.Batch(m.commitsCmd(), m.todosCmd(), m.envCmd())
+		return m, m.afterSelection()
 
 	case commitsDoneMsg:
 		m.commitsLoading = false
@@ -557,8 +568,11 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
 	if m.help {
+		// ctrl+d closes the help and pages the pane underneath, like a
+		// pager: the chord is taken, and a help screen that swallowed it
+		// twice would leave the user stuck on the first row of a long list
 		switch key {
-		case "?", "esc", "q", "ctrl+c":
+		case "?", "esc", "q", "ctrl+c", "ctrl+d":
 			m.help = false
 		}
 		return m, nil
@@ -628,6 +642,8 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.moveCursor(-1)
 	case "down", "j":
 		return m.moveCursor(1)
+	case "pgup", "pgdown", "pgdn", "ctrl+u", "ctrl+d", "home", "end":
+		return m.movePage(key)
 	case "enter":
 		return m.onEnter()
 	case "s":
@@ -727,6 +743,28 @@ func (m Model) setCursorPos(p paneFocus, pos int) (tea.Model, tea.Cmd) {
 
 func (m Model) moveCursor(dy int) (tea.Model, tea.Cmd) {
 	return m.setCursorPos(m.focus, m.selectedIndex(m.focus)+dy)
+}
+
+// movePage jumps by what the pane can actually show. The rows are the height
+// its frame has, not the window's: a list pane at the bottom of the frame is
+// a few rows tall, and paging by the window height would fly past it and land
+// clamped at the end without the user seeing why.
+func (m Model) movePage(key string) (tea.Model, tea.Cmd) {
+	rows := m.geom().innerH(m.focus)
+	switch key {
+	case "pgup":
+		return m.setCursorPos(m.focus, m.selectedIndex(m.focus)-rows)
+	case "pgdown", "pgdn": // bubbletea calls it pgdown; lazygit's name stays too
+		return m.setCursorPos(m.focus, m.selectedIndex(m.focus)+rows)
+	case "ctrl+u":
+		return m.setCursorPos(m.focus, m.selectedIndex(m.focus)-max(1, rows/2))
+	case "ctrl+d":
+		return m.setCursorPos(m.focus, m.selectedIndex(m.focus)+max(1, rows/2))
+	case "home":
+		return m.setCursorPos(m.focus, 0)
+	default: // "end"
+		return m.setCursorPos(m.focus, m.listCount(m.focus)-1)
+	}
 }
 
 // onMouse routes clicks and wheels through the same geometry the renderer
@@ -996,21 +1034,14 @@ func (m Model) View() string {
 	return frame + "\n" + status + "\n" + legend
 }
 
-// legend is the app shortcut bar along the bottom.
+// legend is the app shortcut bar along the bottom. It says less when there is
+// nothing to say: the page keys only appear on a pane whose list is longer
+// than the rows it can paint.
 func (m Model) legend() string {
-	keys := []struct{ key, label string }{
-		{"tab/h/l", "panes"},
-		{"↑/↓", "move"},
-		{"enter", "act"},
-		{"1-9", "project"},
-		{"s", "session"},
-		{"d", "note"},
-		{"?", "help"},
-		{"r", "rescan"},
-		{"q", "quit"},
-	}
+	type kb struct{ key, label string }
+	var keys, tail []kb
 	if m.focus == paneEnv {
-		keys = []struct{ key, label string }{
+		keys = []kb{
 			{"u", "up"},
 			{"s", "stop"},
 			{"d", "down"},
@@ -1018,12 +1049,24 @@ func (m Model) legend() string {
 			{"l", "logs"},
 			{"x", "shell"},
 			{"tab", "panes"},
-			{"?", "help"},
-			{"q", "quit"},
 		}
+		tail = []kb{{"?", "help"}, {"q", "quit"}}
+	} else {
+		keys = []kb{
+			{"tab/h/l", "panes"},
+			{"↑/↓", "move"},
+			{"enter", "act"},
+			{"1-9", "project"},
+			{"s", "session"},
+			{"d", "note"},
+		}
+		tail = []kb{{"?", "help"}, {"r", "rescan"}, {"q", "quit"}}
 	}
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
+	if m.listCount(m.focus) > m.geom().innerH(m.focus) {
+		keys = append(keys, kb{"pgup/dn", "page"}, kb{"home/end", "top"})
+	}
+	parts := make([]string, 0, len(keys)+len(tail))
+	for _, k := range append(keys, tail...) {
 		parts = append(parts, keyStyle(k.key)+dim(" "+k.label))
 	}
 	line := strings.Join(parts, dim(" · "))
@@ -1371,6 +1414,9 @@ func (m Model) helpView() string {
 		"  " + keyStyle("tab") + dim(" / ") + keyStyle("l · →") + dim(" next pane    ") +
 			keyStyle("h · ← · esc") + dim(" previous pane (esc quits at projects)") + "\n" +
 			"  " + keyStyle("mouse") + dim(" click focuses and selects, wheel moves"),
+		accent("lists"),
+		"  " + keyStyle("↑↓ · jk") + dim(" one row    ") + keyStyle("pgup · pgdn") + dim(" page    ") +
+			keyStyle("ctrl+u · ctrl+d") + dim(" half page    ") + keyStyle("home · end") + dim(" first, last"),
 		accent("projects"),
 		"  " + keyStyle("1-9") + dim(" jump to project    ") + keyStyle("enter") + dim(" drill into its repos"),
 		accent("repos"),

@@ -13,6 +13,17 @@ func (r rect) contains(x, y int) bool {
 	return x >= r.x && x < r.x+r.w && y >= r.y && y < r.y+r.h
 }
 
+// innerH is how many rows a pane can paint: its frame height minus the two
+// border rows. Paging and the scroll window both need it, and both must agree
+// with what the renderer actually drew.
+func (g geom) innerH(p paneFocus) int {
+	r, ok := g.rects[p]
+	if !ok {
+		return 1
+	}
+	return max(1, r.h-2)
+}
+
 type geom struct {
 	leftW, rightW, bodyH int
 	projH, repoH         int

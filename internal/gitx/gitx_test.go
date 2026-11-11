@@ -120,6 +120,130 @@ func TestStatusNotARepo(t *testing.T) {
 	}
 }
 
+// The v2 read must answer exactly what the three-call route answered: the
+// panel's badge, the bar widget's icon and this cockpit all read the same
+// Repo, and one subprocess is only worth it if nothing else moved.
+func TestStatusV2MatchesLegacy(t *testing.T) {
+	tmp := t.TempDir()
+	cases := []struct {
+		name string
+		dir  func(t *testing.T) string
+		want Repo
+	}{
+		{"plain dir", func(t *testing.T) string { return t.TempDir() }, Repo{}},
+		{"unborn branch", func(t *testing.T) string {
+			d := filepath.Join(t.TempDir(), "u")
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			git(t, d, "init", "-q", "-b", "main")
+			return d
+		}, Repo{Branch: "main"}},
+	}
+
+	for _, tc := range cases {
+		dir := tc.dir(t)
+		got := statusV2(context.Background(), dir)
+		legacy := statusLegacy(context.Background(), dir)
+		if got.Error == "" && tc.name == "plain dir" {
+			t.Fatalf("%s: no error reported", tc.name)
+		}
+		if got.Branch != legacy.Branch {
+			t.Fatalf("%s: branch %q, legacy %q", tc.name, got.Branch, legacy.Branch)
+		}
+		if (got.Error == "") != (legacy.Error == "") {
+			t.Fatalf("%s: v2 %q vs legacy %q", tc.name, got.Error, legacy.Error)
+		}
+		if tc.want.Branch != "" && got.Branch != tc.want.Branch {
+			t.Fatalf("%s: branch %q, want %q", tc.name, got.Branch, tc.want.Branch)
+		}
+	}
+
+	// a working tree with a rename, a staged delete, an untracked file and
+	// an unstashed modification: the entry count is the same number porcelain
+	// v1 rows produce, which is what the ●N badge has always meant.
+	repo := filepath.Join(tmp, "mixed")
+	newRepo(t, repo)
+	git(t, repo, "mv", "f", "ff")
+	if err := os.WriteFile(filepath.Join(repo, "n"), []byte("1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "f"), []byte("2"), 0o644); err != nil {
+		t.Fatal(err) // an untracked path again after the rename
+	}
+	v2 := statusV2(context.Background(), repo)
+	old := statusLegacy(context.Background(), repo)
+	if v2.Error != "" || old.Error != "" {
+		t.Fatalf("errors: %q %q", v2.Error, old.Error)
+	}
+	if v2.Changes != old.Changes || v2.Dirty != old.Dirty || v2.Pending != old.Pending {
+		t.Fatalf("working tree state differs: v2 %+v legacy %+v", v2, old)
+	}
+	if v2.Changes < 3 {
+		t.Fatalf("rename + untracked + untracked should count: %+v", v2)
+	}
+}
+
+// Detached is a place a cockpit gets driven into by a submodule or a
+// bisect, and v2 says it differently from rev-parse: the full sha instead of
+// a short one, and "(detached)" where the branch name would be.
+func TestStatusDetachedAndUpstream(t *testing.T) {
+	tmp := t.TempDir()
+	remote := filepath.Join(tmp, "remote.git")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, tmp, "init", "-q", "--bare", remote)
+	repo := filepath.Join(tmp, "work")
+	git(t, tmp, "clone", "-q", remote, "work")
+	for _, n := range []string{"a", "b"} {
+		if err := os.WriteFile(filepath.Join(repo, n), []byte(n), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git(t, repo, "add", ".")
+		git(t, repo, "commit", "-q", "-m", "c "+n)
+	}
+	git(t, repo, "push", "-q", "-u", "origin", "main")
+
+	r := Status(context.Background(), repo)
+	if r.Upstream != "origin/main" {
+		t.Fatalf("upstream: %+v", r)
+	}
+
+	one := git(t, repo, "rev-parse", "--short", "HEAD")
+	git(t, repo, "checkout", "-q", "--detach", "HEAD")
+	r = Status(context.Background(), repo)
+	if r.Error != "" {
+		t.Fatalf("detached: %v", r.Error)
+	}
+	if r.Branch != "(detached "+one+")" {
+		t.Fatalf("detached branch label: %q, want (detached %s)", r.Branch, one)
+	}
+	if legacy := statusLegacy(context.Background(), repo); legacy.Branch != r.Branch {
+		t.Fatalf("detached: v2 %q, legacy %q", r.Branch, legacy.Branch)
+	}
+}
+
+func TestAtLeast(t *testing.T) {
+	for _, tc := range []struct {
+		version string
+		want    bool
+	}{
+		{"git version 2.56.0", true},
+		{"git version 2.22.0", true},
+		{"git version 2.22.0.rpmforce", true},
+		{"git version 2.21.4", false},
+		{"git version 1.9.1", false},
+		{"git version 3.0", true},
+		{"git version weird", false},
+		{"", false},
+	} {
+		if got := atLeast(tc.version, 2, 22); got != tc.want {
+			t.Errorf("atLeast(%q) = %v, want %v", tc.version, got, tc.want)
+		}
+	}
+}
+
 func TestCommitsNewestFirstWithMeta(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "repo")
 	newRepo(t, dir) // one commit "c1"

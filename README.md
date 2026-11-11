@@ -21,7 +21,7 @@ project's freshest **vault notes**. The frame lives in `## Layout` below.
 | Feed     | Source | Cost |
 |----------|--------|------|
 | Projects | the `watchDirs` of the `ei.git-status` widget in `~/.config/omarchy/shell.json` | a read of your existing config |
-| Repos    | `git status` etc., parallel, same flags as the panel's scanner (`--no-optional-locks`, fsmonitor off) | ~0.2 s for 15 repos on ntfs |
+| Repos    | one `git status --porcelain=v2 --branch` per repo — branch, upstream, ahead/behind and the working tree in a single call, parallel, same guards as the panel's scanner (`--no-optional-locks`, fsmonitor off); a git older than 2.22 falls back to the three-call route | one subprocess per repo, used to be four |
 | Sessions | `~/.local/share/opencode/opencode.db` via `sqlite3 -json` — read-only first, a plain connection on a refused or mysteriously-empty read (the live db carries a WAL that can reject read-only mid-checkpoint); prefers `session_v2`, falls back to `session`, guards required columns | one subprocess |
 | Todos    | the same db's `todo` table, for the session under the cursor: its open items (`pending`/`in_progress`) appear in the status line | one subprocess per selection |
 | Envs     | a `docker-compose.yml`/`compose.yaml` auto-detected at the project root (or any repo root); state via `docker compose ps --format json` | four stats + one subprocess |
@@ -29,7 +29,8 @@ project's freshest **vault notes**. The frame lives in `## Layout` below.
 
 No API keys, no daemons, nothing written outside `~/.cache` (which it
 does not even use yet). Missing feeds (no sqlite3, no opencode, no vault)
-degrade the UI instead of failing it.
+degrade the UI instead of failing it, and say so: a broken feed warns in
+its pane title, a quiet one explains itself while it holds focus.
 
 ## Layout (lazygit-shaped)
 
@@ -191,6 +192,9 @@ mise exec -- go test ./...
 
 Coverage: config resolution (shell.json round-trip, vault adoption,
 overrides), repo discovery (nesting, depth, dependency pruning), git
-states against a real bare remote, session SQL (prefix rules, quoting,
-`session_v2` preference, schema guards), vault matching (tokens, mtimes),
-and an end-to-end scan over a sandbox home.
+states against a real bare remote (clean, dirty, ahead, detached, upstream,
+and the one-call v2 read held against the three-call legacy one), feed
+notes and errors, session SQL (prefix rules, quoting, `session_v2`
+preference, schema guards), vault matching (tokens, mtimes), pane geometry
+(the frame never exceeding the window), paging, the cursor-to-row mapping,
+mouse routing and an end-to-end scan over a sandbox home.

@@ -39,14 +39,15 @@ const scanTimeout = 20 * time.Second
 // something local that the remote does not have yet (uncommitted or
 // unpushed) -- the bar icon and this badge want the same answer.
 type Repo struct {
-	Path    string `json:"path"`
-	Branch  string `json:"branch"`
-	Dirty   bool   `json:"dirty"`
-	Changes int    `json:"changes"` // porcelain lines, capped at countCap
-	Ahead   int    `json:"ahead"`
-	Behind  int    `json:"behind"`
-	Pending bool   `json:"pending"`
-	Error   string `json:"error,omitempty"`
+	Path     string `json:"path"`
+	Branch   string `json:"branch"`
+	Upstream string `json:"upstream,omitempty"` // "" when the branch has no remote to compare with
+	Dirty    bool   `json:"dirty"`
+	Changes  int    `json:"changes"` // porcelain lines, capped at countCap
+	Ahead    int    `json:"ahead"`
+	Behind   int    `json:"behind"`
+	Pending  bool   `json:"pending"`
+	Error    string `json:"error,omitempty"`
 }
 
 // Discover returns the repository roots under root, sorted, within maxDepth
@@ -92,6 +93,145 @@ func depthOf(p string) int {
 // Status reads one repo. The context bounds the whole call; each git
 // subprocess gets the remaining time.
 func Status(ctx context.Context, path string) Repo {
+	if porcelainV2() {
+		return statusV2(ctx, path)
+	}
+	return statusLegacy(ctx, path)
+}
+
+// statusV2 is the one-subprocess read: since git 2.22, `status
+// --porcelain=v2 --branch` answers branch, upstream, ahead/behind and the
+// working-tree entries in a single call -- which used to cost three git
+// invocations per repository, and on a slow mount those were the entire price
+// of a scan. A failure here is the repository's own (an unreadable index,
+// dubious ownership), and its message is what the row shows, instead of the
+// generic "not a git repository" the legacy path could only guess.
+func statusV2(ctx context.Context, path string) Repo {
+	repo := Repo{Path: path}
+	out, err := run(ctx, path, "status", "--porcelain=v2", "--branch")
+	if err != nil {
+		repo.Error = err.Error()
+		return repo
+	}
+	head, oid := "", ""
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case line == "":
+		case strings.HasPrefix(line, "# "):
+			key, val, _ := strings.Cut(strings.TrimPrefix(line, "# "), " ")
+			switch key {
+			case "branch.head":
+				head = val
+			case "branch.oid":
+				oid = val
+			case "branch.upstream":
+				repo.Upstream = val
+			case "branch.ab":
+				repo.Ahead, repo.Behind = parseAB(val)
+			}
+		default:
+			repo.Changes++ // 1 changed, 2 renamed, u unmerged, ? untracked
+		}
+	}
+	if repo.Changes > countCap {
+		repo.Changes = countCap
+	}
+	repo.Dirty = repo.Changes > 0
+	switch {
+	case head == "(detached)":
+		// v2 hands out the full sha; seven characters is what rev-parse --short
+		// has been printing since the format was chosen
+		repo.Branch = "(detached " + abbrev(oid) + ")"
+	case head == "(unborn)":
+		// a branch with no commits yet: git 2.22..2.27 said so instead of
+		// naming the branch that is about to exist
+		repo.Branch = firstBranchRef(ctx, path)
+	default:
+		repo.Branch = head
+	}
+	repo.Pending = repo.Dirty || repo.Ahead > 0
+	return repo
+}
+
+// abbrev is git's own default short form: seven characters of a full sha.
+func abbrev(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
+// parseAB reads `# branch.ab +2 -1` into ahead and behind. The signs are the
+// answer: + is local work the remote lacks, - is remote work to pull -- the
+// same pair rev-list --left-right --count reports, in the other order.
+func parseAB(val string) (ahead, behind int) {
+	for _, part := range strings.Fields(val) {
+		n, err := strconv.Atoi(part[1:])
+		if err != nil || len(part) < 2 {
+			continue
+		}
+		switch part[0] {
+		case '+':
+			ahead = n
+		case '-':
+			behind = n
+		}
+	}
+	return ahead, behind
+}
+
+// firstBranchRef names the branch an unborn repository is standing on, the
+// way the legacy read did: symbolic-ref succeeds there even though the ref the
+// branch points at does not exist yet.
+func firstBranchRef(ctx context.Context, dir string) string {
+	if b, err := run(ctx, dir, "symbolic-ref", "--short", "-q", "HEAD"); err == nil {
+		return b
+	}
+	return ""
+}
+
+var (
+	v2Once   sync.Once
+	v2Usable bool
+)
+
+// porcelainV2 asks git once per process whether it speaks the v2 status
+// format (2.22, June 2019). Cheaper than discovering it per repository, and
+// it keeps "this git is old" separate from "this repo is broken" -- the two
+// failures the legacy fallback used to blur together.
+func porcelainV2() bool {
+	v2Once.Do(func() {
+		out, err := exec.Command("git", "version").Output()
+		if err != nil {
+			return
+		}
+		v2Usable = atLeast(strings.TrimSpace(string(out)), 2, 22)
+	})
+	return v2Usable
+}
+
+// atLeast reads "git version 2.56.0" (with whatever the distro appends) and
+// answers whether major.minor reaches what the caller needs.
+func atLeast(version string, major, minor int) bool {
+	i := strings.LastIndex(version, "version ")
+	if i >= 0 {
+		version = version[i+len("version "):]
+	}
+	parts := strings.Split(version, ".")
+	if len(parts) < 2 {
+		return false
+	}
+	m, err1 := strconv.Atoi(parts[0])
+	n, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return m > major || (m == major && n >= minor)
+}
+
+// statusLegacy is the three-call route: branch, working tree, ahead/behind.
+// Only a git without the v2 status format takes it.
+func statusLegacy(ctx context.Context, path string) Repo {
 	repo := Repo{Path: path}
 	repo.Branch, repo.Error = branch(ctx, path)
 	if repo.Error != "" {

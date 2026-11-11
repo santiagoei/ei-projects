@@ -398,6 +398,77 @@ func TestKeysActOnTheSelectedRow(t *testing.T) {
 	}
 }
 
+// fetch, pull and push run on the selected repository, in a terminal the user
+// watches. Push leaves the machine, so it asks for the same keystroke twice,
+// and anything that moves the selection or the focus disarms it.
+func TestGitVerbs(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	got := captureActions(t)
+	m := New(&config.Config{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: testReport()})
+	m.selectProject(1)
+	m.repo = 2 // /p/moodle405
+	key := func(k string) tea.Msg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)} }
+
+	m = drive(t, m, key("f"))
+	if c := lastCmd(t, got); c != "uwsm-app -- xdg-terminal-exec --dir=/p/moodle405 -e git fetch --prune" {
+		t.Fatalf("fetch: %q", c)
+	}
+	m = drive(t, m, key("F"))
+	if c := lastCmd(t, got); !strings.HasSuffix(c, "git pull --ff-only") {
+		t.Fatalf("pull: %q", c)
+	}
+
+	*got = nil
+	m = drive(t, m, key("P"))
+	if len(*got) != 0 {
+		t.Fatalf("one P must not push: %v", *got)
+	}
+	if !strings.Contains(m.status, "press P again") {
+		t.Fatalf("no arming feedback: %q", m.status)
+	}
+	m = drive(t, m, key("P"))
+	if c := lastCmd(t, got); !strings.HasSuffix(c, "git push") {
+		t.Fatalf("the second P: %q", c)
+	}
+
+	// walking away disarms: the armed push belongs to a repository, and a
+	// pane change is a walk. It also persists the seat without moving it.
+	before := loadState()
+	m = drive(t, m, key("P"))
+	m = drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.pushArmed {
+		t.Fatal("cycling panes left the push armed")
+	}
+	if after := loadState(); after.Repo != before.Repo || after.Project != before.Project {
+		t.Fatalf("a pane change moved the seat: %+v -> %+v", before, after)
+	}
+	*got = nil
+	m = drive(t, m, key("P"))
+	if len(*got) != 0 {
+		t.Fatalf("the push fired after being disarmed: %v", *got)
+	}
+	// the same for a cursor move inside the same pane
+	m = drive(t, m, key("P"))
+	m = drive(t, m, key("j"))
+	*got = nil
+	m = drive(t, m, key("P"))
+	if len(*got) != 0 {
+		t.Fatalf("the push followed the cursor to another repo: %v", *got)
+	}
+	// and the verbs do nothing at all without a repository selected
+	bare := drive(t, New(&config.Config{}), tea.WindowSizeMsg{Width: 150, Height: 40})
+	bare = drive(t, bare, scanDoneMsg{report: scan.Report{Projects: []scan.Project{{Name: "empty", Path: "/e"}}}})
+	bare = drive(t, bare, key("f"))
+	if strings.Contains(bare.status, "failed") || len(*got) > 0 {
+		t.Fatalf("no repository, no git: %q", bare.status)
+	}
+	if !strings.Contains(bare.status, "no repository") {
+		t.Fatalf("silent refusal: %q", bare.status)
+	}
+}
+
 // The compose verbs go to a terminal, on the service the cursor holds, and
 // every one of them names the file that was detected rather than a default.
 func TestComposeVerbs(t *testing.T) {

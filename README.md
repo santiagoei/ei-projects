@@ -142,6 +142,7 @@ Navigation (the footer bar):
 | `/` | filter the focused pane · `tab` gives the word to the next pane · `enter` keeps it and hands the keys back · `esc` clears it |
 | `enter`     | projects: to repos · repos: lazygit · commits: copy sha · sessions: resume · notes: open |
 | `s` / `d`   | resume the marked session / open the marked note  |
+| `f` `F` `P` | git on the selected repo: fetch, pull `--ff-only`, push (`P` twice — it leaves the machine, and it runs in a terminal) |
 | `S`         | the sessions pane: this repo · this project · everywhere |
 | `1`–`9`     | jump to project N                                 |
 | `r`         | rescan                                            |

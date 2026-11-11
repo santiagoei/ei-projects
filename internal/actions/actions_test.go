@@ -116,3 +116,29 @@ func TestResumeSessionArgv(t *testing.T) {
 		}
 	}
 }
+
+// The git verbs run in a terminal, in the repository, with the flags the
+// cockpit promises -- and a branch name with a slash stays one argument.
+func TestGitArgv(t *testing.T) {
+	got := record(t)
+	if err := Git("/p/moodle", "pull", "--ff-only"); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(*got, " ")
+	for _, part := range []string{"--dir=/p/moodle", "-e git pull --ff-only"} {
+		if !strings.Contains(joined, part) {
+			t.Fatalf("missing %q in %q", part, joined)
+		}
+	}
+
+	*got = nil
+	if err := Git("/p/feature/x y", "push"); err != nil {
+		t.Fatal(err)
+	}
+	for _, arg := range *got {
+		if arg == "--dir=/p/feature/x y" || arg == "/p/feature/x y" {
+			return
+		}
+	}
+	t.Fatalf("the path was split: %v", *got)
+}

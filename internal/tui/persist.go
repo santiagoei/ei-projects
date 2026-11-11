@@ -70,6 +70,9 @@ func loadState() persisted {
 // persist writes the whole state; failures are silent by design: the worst
 // case is reopening at the default selection, never a broken app.
 func (m Model) persist() {
+	if m.pushArmed {
+		return // an armed push is not a seat: an exit keystroke would freeze it
+	}
 	p := m.proj()
 	if p.Path == "" {
 		return

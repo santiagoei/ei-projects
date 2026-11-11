@@ -139,6 +139,10 @@ type Model struct {
 	filterText string
 	filterPane paneFocus
 
+	// pushArmed is the first P spent: pushing leaves the machine, so it asks
+	// for the same keystroke twice.
+	pushArmed bool
+
 	width  int
 	height int
 	status string
@@ -284,6 +288,7 @@ func (m Model) focusVisible() bool {
 // longer contains (the ENV pane vanished with the last project) parks at
 // projects instead of falling off the list.
 func (m *Model) cycleFocus(step int) {
+	m.pushArmed = false
 	m.status = "" // transient feedback belongs to the moment it was made;
 	// leaving it up would hide the session todos behind the status
 	order := m.focusOrder()
@@ -855,6 +860,11 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// The cockpit's own git verbs, on the selected repository.
+	if handled, cmd := m.gitVerb(key); handled {
+		return m, cmd
+	}
+
 	// Global actions on the selected repo (the OPEN IN bar's promise).
 	if fn, ok := m.repoAction(key); ok {
 		if repo, has := m.selectedRepo(); has {
@@ -962,6 +972,42 @@ func (m *Model) retargetFilter(step int) {
 	m.clampCursors()
 }
 
+// gitVerb maps the three keys that act on the repository itself. They are not
+// in the OPEN IN bar: that bar mirrors the git-status panel's row menu, key
+// for key, and these are the cockpit's own.
+//
+// Pull is --ff-only: a cockpit that quietly creates merge commits on the way
+// to a terminal is doing something the user did not ask for. Push is the one
+// verb that leaves the machine, so it arms on the first press and fires on
+// the second; any other key, or moving the selection, disarms it.
+func (m *Model) gitVerb(key string) (bool, tea.Cmd) {
+	if key != "f" && key != "F" && key != "P" {
+		return false, nil
+	}
+	repo, ok := m.selectedRepo()
+	if !ok {
+		// the key is ours even when there is nothing to act on: falling
+		// through would hand "P" to some other binding
+		return true, m.setStatus("no repository selected")
+	}
+	switch key {
+	case "f":
+		m.pushArmed = false
+		return true, m.reported(actions.Git(repo.Path, "fetch", "--prune"), "fetch", repo.Path)
+	case "F":
+		m.pushArmed = false
+		return true, m.reported(actions.Git(repo.Path, "pull", "--ff-only"), "pull", repo.Path)
+	case "P":
+		if !m.pushArmed {
+			m.pushArmed = true
+			return true, m.setStatus(fmt.Sprintf("push %s: press P again", filepath.Base(repo.Path)))
+		}
+		m.pushArmed = false
+		return true, m.reported(actions.Git(repo.Path, "push"), "push", repo.Path)
+	}
+	return false, nil
+}
+
 // envAction maps the ENV pane's keys onto `docker compose`, always shown
 // in a terminal so builds, pulls and logs are watched rather than awaited.
 // It reports whether the key was one of the compose verbs, with the cmd that
@@ -1044,6 +1090,7 @@ func (m Model) repoAction(key string) (func(string) error, bool) {
 // hangs off that row. The pane is an argument, not m.focus, because the mouse
 // wheel scrolls the pane it hovers without stealing focus.
 func (m Model) setCursorPos(p paneFocus, pos int) (tea.Model, tea.Cmd) {
+	m.pushArmed = false // the push belongs to a repository; the cursor is moving
 	n := m.listCount(p)
 	if n == 0 {
 		return m, nil
@@ -1503,6 +1550,7 @@ func (m Model) legend() string {
 			{"s", "session"},
 			{"d", "note"},
 			{"S", "scope"},
+			{"f · F", "fetch · pull"},
 		}
 		tail = []kb{{"?", "help"}, {"r", "rescan"}, {"q", "quit"}}
 	}
@@ -2115,6 +2163,10 @@ func (m Model) helpView() string {
 		{"repos · the OPEN IN bar", []helpPair{
 			{"g", "lazygit"}, {"t", "terminal"}, {"c", "code"}, {"a", "agent"},
 			{"e", "explorer"}, {"y", "copy path"},
+		}},
+		{"repository · git", []helpPair{
+			{"f", "fetch --prune"}, {"F", "pull --ff-only"},
+			{"P P", "push, twice: it leaves the machine — in a terminal"},
 		}},
 		{"context panes", []helpPair{
 			{"s", "resume session"}, {"d", "open note"}, {"enter", "commits: sha · sessions: resume · notes: open"},

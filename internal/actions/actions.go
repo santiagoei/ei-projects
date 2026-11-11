@@ -83,6 +83,15 @@ func Agent(dir string) error {
 		"-e", "omarchy-agent", "--inline")
 }
 
+// Git runs a git verb on the selected repository, in a terminal the user
+// watches: a fetch across the ntfs mount, a pull that has to merge, or a push
+// that needs credentials are all things worth seeing happen rather than
+// awaiting blind. Same argv discipline as every other launcher.
+func Git(dir string, args ...string) error {
+	full := append([]string{"--", "xdg-terminal-exec", "--dir=" + dir, "-e", "git"}, args...)
+	return OpenWindow("uwsm-app", full...)
+}
+
 func Explore(dir string) error {
 	return OpenWindow("uwsm-app", "--", "xdg-open", dir)
 }

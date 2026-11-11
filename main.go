@@ -36,25 +36,61 @@ import (
 var version = "0.1.0"
 
 func main() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "help", "-h", "--help":
-			usage()
-			return
-		case "scan", "code", "agent", "terminal", "resume":
-			run(os.Args[1], os.Args[2:])
-			return
-		default:
-			fmt.Fprintf(os.Stderr, "ei-projects: unknown command %q\n", os.Args[1])
-			usage()
-			os.Exit(2)
+	switch arg := arg(); {
+	case startsCockpit(arg):
+		cockpit()
+	case arg == "help" || arg == "-h" || arg == "--help":
+		usage()
+	case isCommand(arg):
+		run(arg, rest())
+	default:
+		fmt.Fprintf(os.Stderr, "ei-projects: unknown command %q\n", arg)
+		usage()
+		os.Exit(2)
+	}
+}
+
+// commands is every verb that runs without the cockpit, and the one place
+// that says so -- an unknown word reaches the usage text, a flag does not.
+var commands = []string{"scan", "code", "agent", "terminal", "resume"}
+
+func isCommand(arg string) bool {
+	for _, c := range commands {
+		if c == arg {
+			return true
 		}
 	}
+	return false
+}
 
-	var showVersion bool
-	flag.BoolVar(&showVersion, "version", false, "print version and exit")
-	flag.Parse()
-	if showVersion {
+// startsCockpit: no argument at all, or a flag for the cockpit itself
+// (--version). A flag never reaches the command switch, or the version string
+// becomes an "unknown command" -- which is exactly the regression this guards.
+func startsCockpit(arg string) bool {
+	return arg == "" || strings.HasPrefix(arg, "-")
+}
+
+func arg() string {
+	if len(os.Args) > 1 {
+		return os.Args[1]
+	}
+	return ""
+}
+
+func rest() []string {
+	if len(os.Args) > 2 {
+		return os.Args[2:]
+	}
+	return nil
+}
+
+// cockpit is the interactive program: the flags it takes are parsed here, and
+// only here -- a command word in argv[1] never reaches flag.Parse.
+func cockpit() {
+	fs := flag.NewFlagSet("ei-projects", flag.ExitOnError)
+	showVersion := fs.Bool("version", false, "print version and exit")
+	fs.Parse(os.Args[1:])
+	if *showVersion {
 		fmt.Println("ei-projects " + version)
 		return
 	}
@@ -72,7 +108,11 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage: ei-projects [command] [flags] [project]
+	fmt.Fprint(os.Stderr, usageText())
+}
+
+func usageText() string {
+	return `usage: ei-projects [command] [flags] [project]
 
   (no command)          open the cockpit
   scan                  print the report JSON (--pretty)
@@ -84,7 +124,7 @@ func usage() {
 
 [project] is a project or repository name, or its number in the watched list.
 Without one, the repository the cockpit last had selected.
-`)
+`
 }
 
 // resolveFlags is the flag set the launch commands share: which repository,

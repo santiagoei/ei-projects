@@ -135,6 +135,40 @@ func TestResolveFallsBackToTheCockpitSeat(t *testing.T) {
 	}
 }
 
+// The dispatch: a flag is not a command word, and an unknown word says so
+// instead of quietly opening the cockpit.
+func TestIsCommand(t *testing.T) {
+	for _, c := range []string{"scan", "code", "agent", "terminal", "resume"} {
+		if !isCommand(c) {
+			t.Errorf("%q is a command", c)
+		}
+	}
+	// the regression this guard exists for: `--version` reaching the command
+	// switch made the cockpit's own flag an "unknown command"
+	for _, not := range []string{"", "--version", "-version", "-v", "help", "-h", "--help", "codes"} {
+		if isCommand(not) {
+			t.Errorf("%q is not a command", not)
+		}
+	}
+	for _, a := range []string{"", "--version", "-v", "--help"} {
+		if !startsCockpit(a) {
+			t.Errorf("%q should reach the cockpit's flag set", a)
+		}
+	}
+	for _, a := range []string{"scan", "code", "resume", "bogus"} {
+		if startsCockpit(a) {
+			t.Errorf("%q is not a flag", a)
+		}
+	}
+	// and every command listed in the usage text exists as one
+	usage := usageText()
+	for _, c := range commands {
+		if !strings.Contains(usage, c) {
+			t.Errorf("usage does not document %q", c)
+		}
+	}
+}
+
 // resume takes either a session id or a place; the two have to be told apart
 // without asking the user to be precise about which one they typed.
 func TestLooksLikePath(t *testing.T) {

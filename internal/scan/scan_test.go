@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +19,36 @@ func git(t *testing.T, dir string, args ...string) {
 	out, err := exec.Command("git", full...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// A feed that cannot exist here is a report-level note, not a per-project
+// error: the notes say why panes are empty without repeating themselves.
+func TestFeedNotes(t *testing.T) {
+	t.Setenv("EI_PROJECTS_OPENCODE_DB", filepath.Join(t.TempDir(), "absent.db"))
+
+	notes := feedNotes(&config.Config{})
+	sessions, vault := 0, 0
+	for _, n := range notes {
+		switch {
+		case strings.HasPrefix(n, "sessions: "):
+			sessions++
+		case strings.HasPrefix(n, "notes: "):
+			vault++
+		}
+	}
+	if sessions != 1 {
+		t.Fatalf("sessions feed note: %v", notes)
+	}
+	if vault != 1 { // no vault configured at all
+		t.Fatalf("vault feed note missing: %v", notes)
+	}
+
+	cfg := &config.Config{VaultDir: t.TempDir()}
+	for _, n := range feedNotes(cfg) {
+		if strings.HasPrefix(n, "notes: ") {
+			t.Fatalf("a readable vault must not be a failure: %v", n)
+		}
 	}
 }
 

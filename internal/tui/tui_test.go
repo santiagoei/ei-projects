@@ -234,6 +234,60 @@ func TestEnvPaneRefreshesAndShowsKeys(t *testing.T) {
 	}
 }
 
+// A broken feed announces itself: a warning in the pane title, the reason in
+// the status line while that pane holds focus, and an empty list that
+// explains why it is empty instead of looking dead. A feed that merely has
+// nothing for this project explains itself without the warning.
+func TestFeedErrorsAreVisible(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	rep := testReport()
+	rep.Projects[1].FeedErrors = []string{"sessions: opencode.db session schema changed"}
+	rep.Projects[2].FeedNotes = []string{"notes: no docs folder matched gone"}
+
+	m := New(&config.Config{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: rep})
+	m.selectProject(1)
+	m.status = "" // a rescan must not leave a stale action in the status
+	m.focus = paneSessions
+	if !strings.Contains(m.paneSessions(m.geom()), "⚠") {
+		t.Fatal("the sessions title lost its warning")
+	}
+	if !strings.Contains(m.statusLine(), "schema changed") {
+		t.Fatalf("the reason never reached the status: %q", m.statusLine())
+	}
+
+	m.selectProject(2) // no docs, no failure: the pane says so quietly
+	m.focus = paneNotes
+	if body := m.paneNotes(m.geom()); !strings.Contains(body, "no docs folder matched") {
+		t.Fatalf("an empty pane should explain itself:\n%s", body)
+	}
+	if strings.Contains(m.paneNotes(m.geom()), "⚠") {
+		t.Fatal("a note is not a broken feed")
+	}
+
+	// the same note at report level reaches the pane too
+	m2 := New(&config.Config{})
+	m2 = drive(t, m2, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m2 = drive(t, m2, scanDoneMsg{report: scan.Report{
+		FeedNotes: []string{"sessions: sqlite3 not installed"},
+		Projects:  rep.Projects,
+	}})
+	m2.selectProject(2)
+	if got, broken := m2.feedMsg(paneSessions); got != "sqlite3 not installed" || broken {
+		t.Fatalf("report-level note: %q broken=%v", got, broken)
+	}
+	why, broken := m2.feedMsg(paneCommits)
+	if why != "" || broken {
+		t.Fatalf("a pane that reads no feed must not warn: %q %v", why, broken)
+	}
+	// and finding a note never rewrites the slices it looked at
+	m2 = drive(t, m2, scanDoneMsg{report: rep})
+	if len(rep.Projects[2].FeedNotes) != 1 || rep.Projects[2].FeedNotes[0] == "" {
+		t.Fatalf("feed notes were mutated by the lookup: %+v", rep.Projects[2].FeedNotes)
+	}
+}
+
 // Open todos of the selected session appear in the status line while the
 // SESSIONS pane holds focus.
 func TestTodosInStatusLine(t *testing.T) {

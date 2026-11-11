@@ -31,19 +31,28 @@ type Project struct {
 	DocsFolder string          `json:"docsFolder,omitempty"`
 	Notes      []vault.Note    `json:"notes"`
 	Sessions   []agent.Session `json:"sessions"`
-	FeedErrors []string        `json:"feedErrors,omitempty"`
+	// FeedErrors is a feed that tried and failed (schema changed, unreadable
+	// database); FeedNotes is one that has nothing to say for this project
+	// (no docs folder matched). The UI warns only for the first.
+	FeedErrors []string `json:"feedErrors,omitempty"`
+	FeedNotes  []string `json:"feedNotes,omitempty"`
 }
 
 type Report struct {
 	GeneratedAt time.Time `json:"generatedAt"`
 	Projects    []Project `json:"projects"`
+	// FeedNotes describes a feed absent on this machine as a whole (no
+	// sqlite3, no vault): the per-project FeedErrors stay quiet for exactly
+	// those cases, and without this note an empty SESSIONS pane would look
+	// like a bug instead of a missing dependency.
+	FeedNotes []string `json:"feedNotes,omitempty"`
 }
 
 // Run scans every watched folder. The git fan-out is parallel; the agent and
 // vault feeds are cheap enough to run inline but degrade per project: a
 // missing feed appends to FeedErrors and never aborts the report.
 func Run(ctx context.Context, cfg *config.Config) Report {
-	report := Report{GeneratedAt: time.Now()}
+	report := Report{GeneratedAt: time.Now(), FeedNotes: feedNotes(cfg)}
 	projects := make([]Project, len(cfg.WatchDirs))
 
 	var wg sync.WaitGroup
@@ -101,6 +110,11 @@ func scanOne(ctx context.Context, dir string, cfg *config.Config) Project {
 	if docs := docsFolder(cfg, dir); docs != "" {
 		p.DocsFolder = docs
 		p.Notes = vault.Recent(docs, cfg.NotesLimit)
+	} else if cfg.VaultDir != "" {
+		// A vault that exists but matched no folder: an empty NOTES pane
+		// with no reason attached is indistinguishable from a broken feed.
+		// This is a note, not an error: the project simply has no docs.
+		p.FeedNotes = append(p.FeedNotes, fmt.Sprintf("notes: no docs folder matched %s", p.Name))
 	}
 
 	// The contract stays array-shaped when a feed is empty: JSON `null`
@@ -117,6 +131,26 @@ func scanOne(ctx context.Context, dir string, cfg *config.Config) Project {
 	}
 
 	return p
+}
+
+// feedNotes asks whether each feed can exist at all on this machine. These
+// are report-level notes: the per-project FeedErrors stay silent for exactly
+// the "feature is not installed here" cases (see silentFeedError), so without
+// this the UI would show empty panes and never say why.
+func feedNotes(cfg *config.Config) []string {
+	var notes []string
+	if why := agent.FeedNote(); why != "" {
+		notes = append(notes, "sessions: "+why)
+	}
+	if cfg.VaultDir == "" {
+		notes = append(notes, "notes: no vault configured")
+	} else if _, err := os.Stat(cfg.VaultDir); err != nil {
+		notes = append(notes, "notes: vault not readable")
+	}
+	if !env.Available() {
+		notes = append(notes, "env: docker CLI not installed")
+	}
+	return notes
 }
 
 // silentFeedError: the agent feeds degrade quietly when the feature simply

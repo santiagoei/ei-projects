@@ -779,6 +779,65 @@ func (m *Model) reported(err error, what, target string) {
 	m.status = fmt.Sprintf("%s: %s", what, filepath.Base(target))
 }
 
+// -------------------------------------------------------------- feed errors
+
+// feedMsg is why a feed is quiet for the selected project, and whether that
+// is a failure or merely a fact: per-project errors first, then per-project
+// notes, then the report-level notes saying a feed cannot exist here at all.
+// A broken feed warns in the pane title; a note is only spelled out while the
+// pane holds focus, so a project without docs does not look broken.
+func (m Model) feedMsg(p paneFocus) (string, bool) {
+	key := feedKey(p)
+	if key == "" {
+		return "", false
+	}
+	prefix := key + ": "
+	for _, e := range m.proj().FeedErrors {
+		if strings.HasPrefix(e, prefix) {
+			return strings.TrimPrefix(e, prefix), true
+		}
+	}
+	// two loops, never one append: the project's slice shares its backing
+	// array with the report's, and a third feed note would write into it
+	for _, list := range [][]string{m.proj().FeedNotes, m.report.FeedNotes} {
+		for _, n := range list {
+			if strings.HasPrefix(n, prefix) {
+				return strings.TrimPrefix(n, prefix), false
+			}
+		}
+	}
+	return "", false
+}
+
+// feedErr is the broken-feed reason alone ("" for a note).
+func (m Model) feedErr(p paneFocus) string {
+	why, broken := m.feedMsg(p)
+	if !broken {
+		return ""
+	}
+	return why
+}
+
+// feedKey names the feed behind a pane; "" for the panes that read nothing
+// (the ENV pane already carries its own docker error, the git panes their ✗).
+func feedKey(p paneFocus) string {
+	switch p {
+	case paneSessions:
+		return "sessions"
+	case paneNotes:
+		return "notes"
+	}
+	return ""
+}
+
+// warn marks a pane whose feed is broken, right in its title.
+func (m Model) warn(p paneFocus) string {
+	if m.feedErr(p) != "" {
+		return " · ⚠"
+	}
+	return ""
+}
+
 // -------------------------------------------------------------- view
 
 // every style reads the palette through functions so the (theme) values
@@ -1161,6 +1220,23 @@ func (m Model) paneCommits(g geom) string {
 		listWindow(lines, m.cursors[paneCommits], h-2))
 }
 
+// emptyNote explains an empty pane: the feed's reason when there is one
+// (kept plain text before it is styled, so clipping never cuts an escape
+// sequence), the quiet placeholder otherwise. innerW is the pane's usable
+// width: the box does not wrap, it grows, and a frame wider than the window
+// loses its border.
+func (m Model) emptyNote(p paneFocus, placeholder string, innerW int) string {
+	why, broken := m.feedMsg(p)
+	if why == "" {
+		return dim(placeholder)
+	}
+	msg := feedKey(p) + ": " + why
+	if broken {
+		return red("✗ ") + dim(clip(msg, innerW-4))
+	}
+	return dim(clip(msg, innerW-2))
+}
+
 func (m Model) paneSessions(g geom) string {
 	w, h := g.rightW, g.sessionsH
 	inner := w - 4
@@ -1169,7 +1245,7 @@ func (m Model) paneSessions(g geom) string {
 	if repo, ok := m.selectedRepo(); ok {
 		scope = filepath.Base(repo.Path)
 	}
-	title := clip(fmt.Sprintf("SESSIONS · %s · %d", scope, len(list)), inner)
+	title := clip(fmt.Sprintf("SESSIONS · %s · %d", scope, len(list))+m.warn(paneSessions), inner)
 	var lines []string
 	for i, s := range list {
 		meta := dim(padL(shortAge(s.Updated), 5) + " " + padL(fmt.Sprintf("$%.2f", s.Cost), 6))
@@ -1177,7 +1253,7 @@ func (m Model) paneSessions(g geom) string {
 		lines = append(lines, m.fillRow(paneSessions, "> "+line, i == m.cursors[paneSessions], inner))
 	}
 	if len(lines) == 0 {
-		lines = []string{dim("(no sessions)")}
+		lines = []string{m.emptyNote(paneSessions, "(no sessions)", inner)}
 	}
 	return pane(m.focus == paneSessions, title, w, h,
 		listWindow(lines, m.cursors[paneSessions], h-2))
@@ -1187,7 +1263,7 @@ func (m Model) paneNotes(g geom) string {
 	w, h := g.rightW, g.notesH
 	inner := w - 4
 	notes := m.proj().Notes
-	title := clip(fmt.Sprintf("NOTES · %d", len(notes)), inner)
+	title := clip(fmt.Sprintf("NOTES · %d", len(notes))+m.warn(paneNotes), inner)
 	var lines []string
 	for i, n := range notes {
 		meta := dim(padL(shortAge(n.Modified), 5))
@@ -1195,7 +1271,7 @@ func (m Model) paneNotes(g geom) string {
 		lines = append(lines, m.fillRow(paneNotes, "> "+line, i == m.cursors[paneNotes], inner))
 	}
 	if len(lines) == 0 {
-		lines = []string{dim("(no notes)")}
+		lines = []string{m.emptyNote(paneNotes, "(no notes)", inner)}
 	}
 	return pane(m.focus == paneNotes, title, w, h,
 		listWindow(lines, m.cursors[paneNotes], h-2))
@@ -1234,7 +1310,8 @@ func (m Model) helpView() string {
 
 // statusLine carries, in order of urgency: the last action, the open
 // todos of the session under the cursor (while the SESSIONS pane is
-// focused -- "what was left hanging in here"), or the project path.
+// focused -- "what was left hanging in here"), the reason a feed is broken
+// (while the pane that reads it is focused), or the project path.
 func (m Model) statusLine() string {
 	var left string
 	switch {
@@ -1243,7 +1320,15 @@ func (m Model) statusLine() string {
 	case m.focus == paneSessions && len(m.todos) > 0:
 		left = m.todosLine()
 	default:
-		left = dim(clip(shortPath(m.proj().Path), m.width/2))
+		why, broken := m.feedMsg(m.focus)
+		switch {
+		case broken:
+			left = red("⚠ ") + dim(clip(feedKey(m.focus)+": "+why, m.width/2-2))
+		case why != "":
+			left = dim(clip(feedKey(m.focus)+": "+why, m.width/2))
+		default:
+			left = dim(clip(shortPath(m.proj().Path), m.width/2))
+		}
 	}
 	right := ""
 	if m.loading || m.commitsLoading || (m.envLoading && !m.envFetched) {

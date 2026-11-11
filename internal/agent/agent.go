@@ -118,17 +118,40 @@ func sessionTable(db string) (string, error) {
 	return "", ErrNoDatabase
 }
 
+// available is the one place that decides whether the sessions feed can run
+// here at all; Recent reports the error, FeedNote explains the absence in
+// words the UI can show.
+func available() (db string, err error) {
+	if _, e := exec.LookPath("sqlite3"); e != nil {
+		return "", ErrNoBinary
+	}
+	db = DBPath()
+	if fi, e := os.Stat(db); e != nil || fi.Size() == 0 {
+		return "", ErrNoDatabase
+	}
+	return db, nil
+}
+
+// FeedNote is "" when the feed can work, else the reason it cannot -- phrased
+// for a status line, not as an error.
+func FeedNote() string {
+	switch _, err := available(); err {
+	case ErrNoBinary:
+		return "sqlite3 not installed"
+	case ErrNoDatabase:
+		return "no opencode database"
+	}
+	return ""
+}
+
 // Recent returns up to limit newest top-level, non-archived sessions whose
 // directory is root or lives under it -- the same prefix rule the picking
 // script uses, so a session started in a repo inside the project counts
 // for the project.
 func Recent(root string, limit int) ([]Session, error) {
-	db := DBPath()
-	if _, err := exec.LookPath("sqlite3"); err != nil {
-		return nil, ErrNoBinary
-	}
-	if fi, err := os.Stat(db); err != nil || fi.Size() == 0 {
-		return nil, ErrNoDatabase
+	db, err := available()
+	if err != nil {
+		return nil, err
 	}
 
 	table, err := sessionTable(db)
@@ -214,12 +237,9 @@ type Todo struct {
 // not an error; every other feed failure is the caller's to swallow, the
 // detail line is decoration and must never break the cockpit.
 func OpenTodos(sessionID string) ([]Todo, error) {
-	db := DBPath()
-	if _, err := exec.LookPath("sqlite3"); err != nil {
-		return nil, ErrNoBinary
-	}
-	if fi, err := os.Stat(db); err != nil || fi.Size() == 0 {
-		return nil, ErrNoDatabase
+	db, err := available()
+	if err != nil {
+		return nil, err
 	}
 	have, err := columns(db, "todo")
 	if err != nil || !have["content"] || !have["status"] {

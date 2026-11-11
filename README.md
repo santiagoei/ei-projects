@@ -145,7 +145,7 @@ Navigation (the footer bar):
 | `f` `F` `P` | git on the selected repo: fetch, pull `--ff-only`, push (`P` twice — it leaves the machine, and it runs in a terminal) |
 | `S`         | the sessions pane: this repo · this project · everywhere |
 | `1`–`9`     | jump to project N                                 |
-| `r`         | rescan                                            |
+| `r`         | rescan (also on a timer: `autoRefresh`)           |
 | `T`         | reload the Omarchy theme and the default agent    |
 | `?`         | full help overlay                                 |
 | `q`         | quit                                              |
@@ -229,9 +229,18 @@ shell.json; all keys optional:
   "maxDepth": 4,
   "notesLimit": 5,
   "sessionLimit": 10,
-  "layout": "auto"
+  "layout": "auto",
+  "autoRefresh": 45
 }
 ```
+
+`autoRefresh` is the seconds between background re-scans: this is a window
+left open while the work happens somewhere else — an agent committing, a
+build finishing, a container dying — and a state that only moves when `r` is
+pressed is a state the user stops trusting. The tick refetches the scan and,
+for the selection, the repository's history and the session's open items,
+without raising any loading flag: the rows on screen stay until the new ones
+arrive. `0` means never, and `r` is the refresh.
 
 `layout` decides the shape of the frame: `"wide"` is the two columns
 described above, `"compact"` is one column with every box as wide as the

@@ -20,6 +20,7 @@ const (
 	DefaultMaxDepth     = 4
 	DefaultNotesLimit   = 5
 	DefaultSessionLimit = 20 // per project; the TUI narrows it to the repo
+	DefaultAutoRefresh  = 45 // seconds between background re-scans
 	defaultWidgetID     = "ei.git-status"
 )
 
@@ -34,6 +35,9 @@ type Config struct {
 	// wide as the window for a cockpit docked to the side of a monitor. Auto
 	// picks by width and gives up when the window has no room for the stack.
 	Layout string `json:"layout"`
+	// AutoRefresh is how often the background re-scan runs, in seconds; 0
+	// means never, and the user presses r.
+	AutoRefresh int `json:"autoRefresh"`
 }
 
 // widgetEntry is one layout slot in shell.json. Everything is an `any` bag:
@@ -44,6 +48,7 @@ type widgetEntry map[string]any
 func Load() (*Config, error) {
 	cfg := Config{
 		Layout:       "auto",
+		AutoRefresh:  DefaultAutoRefresh,
 		MaxDepth:     DefaultMaxDepth,
 		NotesLimit:   DefaultNotesLimit,
 		SessionLimit: DefaultSessionLimit,
@@ -70,6 +75,7 @@ func Load() (*Config, error) {
 			NotesLimit   *int               `json:"notesLimit"`
 			SessionLimit *int               `json:"sessionLimit"`
 			Layout       *string            `json:"layout"`
+			AutoRefresh  *int               `json:"autoRefresh"`
 		}
 		if err := json.Unmarshal(data, &own); err != nil {
 			return nil, fmt.Errorf("%s: %w", ownPath, err)
@@ -91,6 +97,9 @@ func Load() (*Config, error) {
 		}
 		if own.SessionLimit != nil && *own.SessionLimit > 0 {
 			cfg.SessionLimit = *own.SessionLimit
+		}
+		if own.AutoRefresh != nil && *own.AutoRefresh >= 0 {
+			cfg.AutoRefresh = *own.AutoRefresh
 		}
 		if own.Layout != nil {
 			switch *own.Layout {

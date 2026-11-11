@@ -120,6 +120,7 @@ type Model struct {
 	todos          []agent.Todo
 	todosFor       string
 	scope          sessionScope // what the SESSIONS pane is listing
+	refreshing     bool         // a background re-scan is in flight
 	envSvcs        []env.Service
 	envFor         string
 	envFetched     bool
@@ -160,11 +161,14 @@ func New(cfg *config.Config) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.scanCmd(), m.spinner.Tick, envTick())
+	return tea.Batch(m.scanCmd(), m.spinner.Tick, envTick(), refreshTick(m.refreshEvery()))
 }
 
 func (m Model) scanCmd() tea.Cmd {
 	cfg := m.cfg
+	if cfg == nil { // a bare New(cfg) with nothing in it must not panic here
+		cfg = &config.Config{}
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), scanDeadline)
 		defer cancel()
@@ -222,6 +226,39 @@ func (m Model) selectedSessionID() string {
 	return m.sessionsFor()[repo.idx].ID
 }
 
+// refreshFeeds re-reads what hangs off the selection -- the history of the
+// repository under the cursor, the open items of the session under it -- on
+// the background tick. The reports arrive through the same messages a normal
+// fetch uses, and those are race-guarded by the identity they were asked for,
+// so a reply for a row the user has since walked past is dropped rather than
+// rendered.
+//
+// Nothing here sets a "loading" flag: rows that are on screen stay there until
+// the new ones arrive. A pane that blanks itself every forty-five seconds is a
+// pane the user stops reading.
+func (m Model) refreshFeeds() []tea.Cmd {
+	var cmds []tea.Cmd
+	if repo, ok := m.selectedRepo(); ok {
+		path := repo.Path
+		cmds = append(cmds, func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), commitDeadline)
+			defer cancel()
+			c, err := gitx.Commits(ctx, path, commitCount)
+			return commitsDoneMsg{repoPath: path, commits: c, err: err}
+		})
+	}
+	if id := m.selectedSessionID(); id != "" {
+		cmds = append(cmds, func() tea.Msg {
+			td, err := agent.OpenTodos(id)
+			if err != nil {
+				return todosDoneMsg{sessionID: id}
+			}
+			return todosDoneMsg{sessionID: id, todos: td}
+		})
+	}
+	return cmds
+}
+
 // envCmd refreshes the compose service state of the selected project.
 func (m *Model) envCmd() tea.Cmd {
 	p := m.proj()
@@ -253,6 +290,29 @@ func envFetch(path string) tea.Cmd {
 // envRefresh is how often the ENV pane re-reads compose state, so a
 // container that stops or starts shows up without a keypress.
 const envRefresh = 5 * time.Second
+
+// refreshTickMsg drives the background re-scan. This is a window left open
+// while the work happens somewhere else -- an agent committing, a build
+// finishing, a container dying -- and a state that only moves when `r` is
+// pressed is a state the user stops trusting.
+type refreshTickMsg struct{}
+
+func refreshTick(every time.Duration) tea.Cmd {
+	if every <= 0 {
+		return nil
+	}
+	return tea.Tick(every, func(time.Time) tea.Msg { return refreshTickMsg{} })
+}
+
+// refreshEvery is the heartbeat, or 0 for "never": the config says so, and a
+// cockpit with no config (a test, a bare New) does not scan behind anyone's
+// back.
+func (m Model) refreshEvery() time.Duration {
+	if m.cfg == nil || m.cfg.AutoRefresh <= 0 {
+		return 0
+	}
+	return time.Duration(m.cfg.AutoRefresh) * time.Second
+}
 
 type envTickMsg struct{}
 
@@ -671,7 +731,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case scanDoneMsg:
-		m.loading = false
+		m.loading, m.refreshing = false, false
 		if msg.err != nil {
 			return m, m.setStatus("scan failed: " + msg.err.Error())
 		}
@@ -725,6 +785,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.cursors[paneEnv] = m.cursorFor(paneEnv)
 		return m, m.tickIfBusy()
+
+	case refreshTickMsg:
+		// never two scans at once; the next tick is armed whether this one
+		// could run or not, so a busy cockpit does not stop refreshing
+		if m.loading || m.refreshing {
+			return m, refreshTick(m.refreshEvery())
+		}
+		m.refreshing = true
+		return m, tea.Batch(append([]tea.Cmd{refreshTick(m.refreshEvery()), m.scanCmd()},
+			m.refreshFeeds()...)...)
 
 	case envTickMsg:
 		if p := m.proj(); p.EnvFile != "" && m.envFetched && !m.envLoading && env.Available() {
@@ -2259,7 +2329,7 @@ func (m Model) statusLine() string {
 	// only the spinner shares the status line: the timestamp it used to carry
 	// lives in the breadcrumb, and "? help" is in the legend
 	right := ""
-	if m.loading || m.commitsLoading || (m.envLoading && !m.envFetched) {
+	if m.loading || m.refreshing || m.commitsLoading || (m.envLoading && !m.envFetched) {
 		right = m.spinner.View()
 	}
 	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)

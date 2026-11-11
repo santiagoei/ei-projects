@@ -349,3 +349,29 @@ func OpenTodos(sessionID string) ([]Todo, error) {
 	}
 	return rows, nil
 }
+
+// SessionDir is where a session with this id ran: enough to hand the resume
+// straight to opencode without scanning the watch dirs for it.
+func SessionDir(id string) (string, bool, error) {
+	db, err := available()
+	if err != nil {
+		return "", false, err
+	}
+	table, err := sessionTable(db)
+	if err != nil {
+		return "", false, err
+	}
+	esc := strings.ReplaceAll(id, "'", "''")
+	out, err := queryJSON(db, fmt.Sprintf(
+		"SELECT directory FROM %s WHERE id = '%s' LIMIT 1;", table, esc))
+	if err != nil || strings.TrimSpace(string(out)) == "" {
+		return "", false, nil
+	}
+	var rows []struct {
+		Directory string `json:"directory"`
+	}
+	if err := json.Unmarshal(out, &rows); err != nil || len(rows) == 0 {
+		return "", false, nil
+	}
+	return rows[0].Directory, true, nil
+}

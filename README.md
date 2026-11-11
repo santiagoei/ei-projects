@@ -10,16 +10,16 @@ Built for Omarchy + Hyprland + foot; designed to be opened from a
 keybind into a floating, centered window (see the setup below).
 
 Six focusable panes, lazygit-shaped (the sixth appearing only for projects
-with a docker environment): projects (top-left), the selected project's
-repositories (bottom-left), a one-line **OPEN IN** launcher bar
-for the selected repo (top-right), and beneath it three stacked list
-panes: the repo's **commits**, its **opencode sessions**, and the
+with a docker environment): projects, the selected project's
+repositories, a one-line **OPEN IN** launcher bar for the selected
+repository, and three stacked list panes: the repo's **commits**, its **opencode sessions**, and the
 project's freshest **vault notes**. Under the repositories, when the window
 has the rows, a read-only **DETAIL** block says what the selected repo is:
 its branch, path, push target and origin, last commit, docs folder and
 compose file — a display, not a stop: the tab order does not grow, because a
 pane the user cannot act on should not steal the keys. The frame lives in
-`## Layout` below.
+`## Layout` below, and `layout` in the config can stack the same panes into
+a single column for a cockpit docked to a monitor's side.
 
 ## What it reads
 
@@ -235,6 +235,25 @@ scheme (PARA-like `tr.uh`) does not speak the project's name — the token
 heuristic bridges `icampus.fei.org` → `tr.fei` on the shared "fei", but
 two-letter tokens are too generic to trust.
 
+## From a keybind, without the cockpit
+
+The launchers are commands too, for the moments one keystroke should be
+enough:
+
+```bash
+ei-projects code                 # the repository the cockpit last had selected
+ei-projects code icampus         # a project: the repository inside it
+ei-projects agent moodle405      # a repository by its own name
+ei-projects terminal 2           # or by its number in the watched list
+ei-projects resume               # the newest session across every watch dir
+ei-projects resume ses_01Ab...   # or one by id, in the directory it ran in
+```
+
+They read the same config, the same watched folders and the same saved seat
+as the cockpit, so `SUPER+M` and a bare `ei-projects code` agree on what
+"my project" is. Names that do not match are refused with the list of what
+does.
+
 ## JSON contract
 
 ```bash
@@ -247,11 +266,12 @@ consume the same shape instead of scanning twice.
 
 ## Roadmap
 
-Phase 2 adds Todoist (open tasks per project, reusing the token
-`crmne.todoist` already stores) and docker environments
-(`docker compose ps` badges, up/down/logs from the cockpit). Phase 3:
-`project.toml` manifests per folder, making the graph explicit where
-today it is discovered.
+Todoist is the next feed: open tasks per project, reusing the token
+`crmne.todoist` already stores, arriving as a pane the way sessions and notes
+did. `project.toml` manifests per folder would make explicit the graph the
+cockpit discovers today -- which repository belongs to which project, which
+vault folder documents it, which environment runs it -- and would replace the
+name heuristics that `docsMap` exists to correct.
 
 ## Tests
 

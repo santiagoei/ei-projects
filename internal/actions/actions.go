@@ -78,10 +78,6 @@ func Terminal(dir string) error {
 	return OpenWindow("uwsm-app", "--", "xdg-terminal-exec", "--dir="+dir)
 }
 
-func Editor(path string) error {
-	return OpenWindow("omarchy-launch-editor", path)
-}
-
 func Agent(dir string) error {
 	return OpenWindow("uwsm-app", "--", "xdg-terminal-exec", "--dir="+dir,
 		"-e", "omarchy-agent", "--inline")
@@ -89,6 +85,15 @@ func Agent(dir string) error {
 
 func Explore(dir string) error {
 	return OpenWindow("uwsm-app", "--", "xdg-open", dir)
+}
+
+// Editor opens one directory in the configured editor. A project folder is a
+// fine argument: every repository inside it is then in the same window, which
+// is what `ei-projects code --all [project]` asks for. Opening several
+// repositories one call at a time would be six editor windows instead of one,
+// so there is no such thing here.
+func Editor(dir string) error {
+	return OpenWindow("omarchy-launch-editor", dir)
 }
 
 // Compose opens a terminal already cd'd into the environment and runs the

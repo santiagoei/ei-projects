@@ -312,3 +312,22 @@ func TestOpenCountsQuotesIds(t *testing.T) {
 		t.Fatalf("escaped id: %+v", got)
 	}
 }
+
+// Resuming by id has to know where the session ran, and it has to know that
+// from the database alone -- the cockpit is not open to point at a project.
+func TestSessionDir(t *testing.T) {
+	buildDB(t,
+		"'s1','here','/srv/proj/repoA',NULL,3000,NULL,1",
+		"'s2','quote','/srv/it''s',NULL,2000,NULL,1",
+	)
+	if dir, found, err := SessionDir("s1"); err != nil || !found || dir != "/srv/proj/repoA" {
+		t.Fatalf("s1: %q %v %v", dir, found, err)
+	}
+	if dir, found, err := SessionDir("it's"); found || err != nil || dir != "" {
+		t.Fatalf("an unknown id is not a directory: %q %v %v", dir, found, err)
+	}
+	// a quote inside an id is one literal, not a broken query
+	if _, found, err := SessionDir("s2"); err != nil || !found {
+		t.Fatalf("s2: %v %v", found, err)
+	}
+}

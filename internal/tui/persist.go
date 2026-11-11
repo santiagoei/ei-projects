@@ -130,3 +130,15 @@ func (m *Model) restoreCursors(s persisted) {
 	}
 	m.clampCursors()
 }
+
+// LastSelection is the repository the cockpit had selected the last time it
+// ran -- the same path it would restore. The CLI asks it when the user types
+// "ei-projects code" with no argument: the keybind and the command should
+// reopen the thing they were working on, not the first folder alphabetically.
+func LastSelection() (string, bool) {
+	s := loadState()
+	if s.Repo != "" {
+		return s.Repo, true
+	}
+	return s.Project, s.Project != ""
+}

@@ -13,11 +13,7 @@ Six focusable panes, lazygit-shaped (the sixth appearing only for projects
 with a docker environment): projects, the selected project's
 repositories, a one-line **OPEN IN** launcher bar for the selected
 repository, and three stacked list panes: the repo's **commits**, its **opencode sessions**, and the
-project's freshest **vault notes**. Under the repositories, when the window
-has the rows, a read-only **DETAIL** block says what the selected repo is:
-its branch, path, push target and origin, last commit, docs folder and
-compose file — a display, not a stop: the tab order does not grow, because a
-pane the user cannot act on should not steal the keys. The frame lives in
+project's freshest **vault notes**. Under the repositories, cuando la ventana tiene filas disponibles, un bloque **DETAIL** (ocupando hasta el 30% del alto disponible) muestra información de solo lectura del repositorio seleccionado: rama, ruta, destino de push y origen, último commit, carpeta de docs y archivo compose — un panel de visualización, no de interacción: no crece el orden de tabulación porque un panel que el usuario no puede actuar no debe robar las teclas. The frame lives in
 `## Layout` below, and `layout` in the config can stack the same panes into
 a single column for a cockpit docked to a monitor's side.
 
@@ -44,12 +40,16 @@ obsidian › theme_fei4 · main · ●3 ↑2 · env 2/4 · 6 repos scanned 30s
 ╭▶ PROJECTS · 4 · ●3 ─────╮╭─ OPEN IN · theme_fei4 ─────────────────╮
 │> 1 xxxx        ●↑✓      ││g lazygit · t terminal · c code · a …   │
 │  2 yyyy        ✓✓+12    │╰────────────────────────────────────────╯
-╰─────────────────────────╯╭─ COMMITS · 15 ─────────────────────────╮
-╭─ REPOSITORIES ──────────╮│> 97d5fe3 Move files  santiago 10m┃     │
-│> theme_fei4   ●3 ↑2     ││  82cde26 Audit +   santiago  16d┃      │
-│  www          ✓         │╰────────────────────────────────────────╯
-│  moodledev    ✗         │╭─ SESSIONS · repo · 20 · 3 open ────────╮
-╰─────────────────────────╯│> Auditoría y curaduría ▸3 7d $0.10     │
+╰─────────────────────────╯╭─ REPOSITORIES ─────────────────────────╮
+│> theme_fei4   ●3 ↑2     │╭─ COMMITS · 15 ─────────────────────────╮
+│  www          ✓         ││> 97d5fe3 Move files  santiago 10m┃     │
+│  moodledev    ✗         ││  82cde26 Audit +   santiago  16d┃      │
+╰─────────────────────────╯╰────────────────────────────────────────╯
+╭─ DETAIL ────────────────────────────────────────────────────────────╮
+│/p/theme_fei4 · main → origin/main · 97d5fe3 Move files · tr.fei     │
+╰────────────────────────────────────────────────────────────────────╯
+╭─ SESSIONS · repo · 20 · 3 open ───────────────────────────────────╮
+│> Auditoría y curaduría ▸3 7d $0.10     │
                            │  Retomar pendientes  ▸1 2d $0.64       │
                            ╰────────────────────────────────────────╯
                            ╭─ NOTES · 5 · ⌕ ────────────────────────╮
@@ -237,7 +237,7 @@ shell.json; all keys optional:
   "notesLimit": 5,
   "sessionLimit": 10,
   "layout": "auto",
-  "autoRefresh": 45
+  "autoRefresh": 90
 }
 ```
 
@@ -247,7 +247,8 @@ build finishing, a container dying — and a state that only moves when `r` is
 pressed is a state the user stops trusting. The tick refetches the scan and,
 for the selection, the repository's history and the session's open items,
 without raising any loading flag: the rows on screen stay until the new ones
-arrive. `0` means never, and `r` is the refresh.
+arrive. `0` means never, and `r` is the refresh. The default es **90 segundos**
+para no molestar mientras se navega el cockpit.
 
 `layout` decides the shape of the frame: `"wide"` is the two columns
 described above, `"compact"` is one column with every box as wide as the

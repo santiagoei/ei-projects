@@ -20,7 +20,7 @@ const (
 	DefaultMaxDepth     = 4
 	DefaultNotesLimit   = 5
 	DefaultSessionLimit = 20 // per project; the TUI narrows it to the repo
-	DefaultAutoRefresh  = 45 // seconds between background re-scans
+	DefaultAutoRefresh  = 90 // seconds between background re-scans
 	defaultWidgetID     = "ei.git-status"
 )
 

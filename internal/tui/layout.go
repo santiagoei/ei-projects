@@ -95,7 +95,8 @@ func (m Model) geom() geom {
 	detailWant := len(m.detailLines(g.leftW-4)) + 2
 	if detailWant >= listFloor && g.bodyH >= detailWant+2*listFloor {
 		g.projH = clamp(m.height*42/100, listFloor, g.bodyH-detailWant-listFloor)
-		g.detailH = detailWant
+		// 30% del alto disponible para el panel DETAIL, pero no menos de listFloor
+		g.detailH = max(listFloor, max(detailWant, g.bodyH/3))
 		g.repoH = g.bodyH - g.projH - g.detailH
 	} else {
 		g.detailH = 0

@@ -1286,8 +1286,12 @@ func TestDetailBlockUsesTheSpareRows(t *testing.T) {
 	if g.projH < listFloor || g.repoH < listFloor {
 		t.Fatalf("the left column starved: proj=%d repos=%d detail=%d", g.projH, g.repoH, g.detailH)
 	}
+	// El panel DETAIL ocupa al menos listFloor y hasta 30% del alto disponible
+	if g.detailH < listFloor {
+		t.Fatalf("el panel DETAIL debe ser al menos %d filas, pero es %d", listFloor, g.detailH)
+	}
 	if g.projH+g.repoH+g.detailH != g.bodyH {
-		t.Fatalf("the left column does not add up: %d+%d+%d != %d", g.projH, g.repoH, g.detailH, g.bodyH)
+		t.Fatalf("la columna izquierda no suma: %d+%d+%d != %d", g.projH, g.repoH, g.detailH, g.bodyH)
 	}
 	// no repository, no block
 	m2 := drive(t, New(&config.Config{}), tea.WindowSizeMsg{Width: 150, Height: 40})

@@ -2066,7 +2066,7 @@ func (m Model) helpView() string {
 		{"filter", []helpPair{
 			{"/", "narrow the focused pane"}, {"tab", "give the word to the next pane"},
 			{"enter", "keep it, keys back"}, {"esc", "clear it"},
-			{"", "in order, case and accents ignored; rows keep their order"},
+			{"⌕", "characters in order, case and accents ignored; rows keep their order"},
 		}},
 		{"projects", []helpPair{
 			{"1-9", "jump to project"}, {"enter", "drill into its repos"},

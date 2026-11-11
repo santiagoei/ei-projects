@@ -609,6 +609,31 @@ func TestScrollbarMarksTheCut(t *testing.T) {
 	}
 }
 
+// The help screen is the one view whose height comes from its own content, so
+// it is checked on its own: every window the cockpit accepts has to show it
+// without a row walking off the bottom -- the rows may not wrap either, which
+// is what made the old one overflow at 80 columns.
+func TestHelpFitsEveryWindowSize(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	for _, size := range []struct{ w, h int }{
+		{60, 22}, {61, 23}, {80, 24}, {100, 30}, {120, 22}, {150, 40}, {200, 22}, {300, 60},
+	} {
+		m := drive(t, New(&config.Config{}), tea.WindowSizeMsg{Width: size.w, Height: size.h})
+		m = drive(t, m, scanDoneMsg{report: testReport()})
+		m.help = true
+		view := m.View()
+		m.help = false
+		if n := strings.Count(view, "\n") + 1; n > size.h-1 {
+			t.Errorf("%dx%d: help is %d lines, window %d\n%s", size.w, size.h, n, size.h, view)
+		}
+		for _, line := range strings.Split(view, "\n") {
+			if w := lipgloss.Width(line); w > size.w {
+				t.Errorf("%dx%d: a help row is %d wide\n%s", size.w, size.h, w, line)
+			}
+		}
+	}
+}
+
 // An action's echo leaves on its own: the status line is shared with the
 // session todos and the feed note, and it used to sit there until the next
 // pane cycle hid them both. The expiry tick carries the generation of the
@@ -707,6 +732,93 @@ func writeTheme(t *testing.T, state, accent string) {
 	body := "accent = \"" + accent + "\"\nforeground = \"#dddddd\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "colors.toml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// `/` narrows one pane at a time. What survives is what the cursor, the
+// actions and the counts can reach; the pane next to it keeps showing the
+// world, and clearing the word gives the rows back.
+func TestFilterNarrowsOnePane(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	got := captureActions(t)
+
+	m := New(&config.Config{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: testReport()})
+	m.selectProject(1) // six repositories, two of them moodles
+	m.focus = paneRepos
+	key := func(k string) tea.Msg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)} }
+
+	// typing, then handing the keys back
+	m = drive(t, m, key("/"), key("moo"), tea.KeyMsg{Type: tea.KeyEnter})
+	if n := m.listCount(paneRepos); n != 2 {
+		t.Fatalf("rows after the filter: %d, want 2", n)
+	}
+	if n := m.listCount(paneNotes); n != len(m.proj().Notes) {
+		t.Fatalf("another pane got narrowed too: %d", n)
+	}
+	if !strings.Contains(m.paneRepos(m.geom()), "⌕") {
+		t.Fatal("the narrowed pane does not say so")
+	}
+	if sl := m.statusLine(); !strings.Contains(sl, "moo") || !strings.Contains(sl, "2/6") {
+		t.Fatalf("the status lost the needle or its count: %q", sl)
+	}
+
+	// the selection did not move: a filter narrows what is on screen, it does
+	// not decide where the user is working
+	if got := m.repo; got != 0 {
+		t.Fatalf("the filter moved the selection: repo index %d", got)
+	}
+	if sel := m.selectedIndex(paneRepos); sel != -1 {
+		t.Fatalf("the hidden selection should not be on screen: %d", sel)
+	}
+	// the first press walks into the matches, the next into the second one
+	m = drive(t, m, key("j"))
+	m = drive(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if c := lastCmd(t, got); !strings.HasSuffix(c, "-p /p/moodle405") {
+		t.Fatalf("first match: %q", c)
+	}
+	m = drive(t, m, key("j"), tea.KeyMsg{Type: tea.KeyEnter})
+	if c := lastCmd(t, got); !strings.HasSuffix(c, "-p /p/moodle401") {
+		t.Fatalf("second match: %q", c)
+	}
+
+	// nothing matches: the pane explains itself and no row can be acted on
+	m = drive(t, m, key("/"), key("zz"), tea.KeyMsg{Type: tea.KeyEnter})
+	if m.listCount(paneRepos) != 0 {
+		t.Fatalf("moozz should match nothing: %d", m.listCount(paneRepos))
+	}
+	if body := m.paneRepos(m.geom()); !strings.Contains(body, "no repositories") &&
+		!strings.Contains(body, "matches") {
+		t.Fatalf("an empty filtered pane is silent:\n%s", body)
+	}
+
+	// esc gets the user out of the input; a second press drops the needle and
+	// the rows come back
+	m = drive(t, m, tea.KeyMsg{Type: tea.KeyEscape}, tea.KeyMsg{Type: tea.KeyEscape})
+	if m.listCount(paneRepos) != 6 || m.filterText != "" {
+		t.Fatalf("esc did not clear: %d rows, needle %q", m.listCount(paneRepos), m.filterText)
+	}
+
+	// tab hands the same word to the next pane instead of typing a tab
+	m = drive(t, m, key("/"), key("aud"))
+	before := m.filterPane
+	m = drive(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.filterPane == before {
+		t.Fatal("tab did not move the filter")
+	}
+	if m.filterText != "aud" {
+		t.Fatalf("tab lost the word: %q", m.filterText)
+	}
+	// backspace edits, and the pane under the cursor stays inside the rows
+	m = drive(t, m, tea.KeyMsg{Type: tea.KeyBackspace}, tea.KeyMsg{Type: tea.KeyBackspace})
+	if m.filterText != "a" {
+		t.Fatalf("backspace: %q", m.filterText)
+	}
+	m = drive(t, m, tea.KeyMsg{Type: tea.KeyEscape})
+	if m.filtering || m.listCount(paneRepos) != 6 || m.filterText != "" {
+		t.Fatalf("esc did not clear: filtering=%v %d rows, needle %q",
+			m.filtering, m.listCount(paneRepos), m.filterText)
 	}
 }
 

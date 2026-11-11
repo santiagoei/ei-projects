@@ -1,11 +1,12 @@
-// Package tui is the cockpit: a lazygit-shaped frame of five panes over a
+// Package tui is the cockpit: a lazygit-shaped frame of six panes over a
 // scan.Report -- projects top-left, the selected project's repositories
 // bottom-left, and down the right edge: a one-line OPEN IN launcher bar for
-// the selected repository, then three stacked list panes (commits, opencode
-// sessions, vault notes). Focus walks panes with tab/h/l, or a click; the
-// git history loads on demand for the selected repo so the standing scan
-// stays cheap. Colours come from the Omarchy theme; the last selection is
-// remembered across launches.
+// the selected repository, then the conditional compose pane and three
+// stacked list panes (commits, opencode sessions, vault notes). Focus walks
+// panes with tab/h/l, or a click; `/` narrows the rows a pane shows; the git
+// history loads on demand for the selected repo so the standing scan stays
+// cheap. Colours come from the Omarchy theme; the last seat is remembered
+// across launches.
 package tui
 
 import (
@@ -94,6 +95,7 @@ type Model struct {
 	commitsLoading bool
 	todos          []agent.Todo
 	todosFor       string
+	scope          sessionScope // what the SESSIONS pane is listing
 	envSvcs        []env.Service
 	envFor         string
 	envFetched     bool
@@ -102,6 +104,14 @@ type Model struct {
 	spinner        spinner.Model
 	help           bool
 	restored       bool
+
+	// The filter: a needle, the pane it applies to, and whether the keyboard
+	// is still feeding it. One pane at a time on purpose -- a cockpit where
+	// every pane is half-empty makes "there is nothing here" and "it did not
+	// match" indistinguishable.
+	filtering  bool
+	filterText string
+	filterPane paneFocus
 
 	width  int
 	height int
@@ -329,11 +339,36 @@ func (m Model) items(p paneFocus) []item {
 	return nil
 }
 
-// visible is a pane's rows after the active filter. It is the seam the filter
-// hangs on: everything above it is the world, everything below is what the
-// user is looking at.
+// visible is a pane's rows after the filter: the seam everything else was
+// built around. Only the pane the needle belongs to is narrowed, and the order
+// never changes -- a session list is chronology and a commit list is history,
+// so the filter drops rows and never sorts them.
 func (m Model) visible(p paneFocus) []item {
-	return m.items(p)
+	all := m.items(p)
+	if !m.filterOn() || p != m.filterPane {
+		return all
+	}
+	out := make([]item, 0, len(all))
+	for _, it := range all {
+		if fuzzyMatch(it.label, m.filterText) {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// filterOn is a needle long enough to narrow anything. An empty one is not a
+// filter: the panes have to show the world again, not an empty list.
+func (m Model) filterOn() bool {
+	return m.filterText != ""
+}
+
+// filterMark is the pane's own note that something is hiding its rows.
+func (m Model) filterMark(p paneFocus) string {
+	if m.filterOn() && p == m.filterPane {
+		return " · ⌕"
+	}
+	return ""
 }
 
 // rowAt is the item under the pane's cursor.
@@ -356,8 +391,12 @@ func (m Model) realIdx(p paneFocus) int {
 	return it.idx
 }
 
+// proj and selectedRepo read the selection, which for these two panes is an
+// ITEM index (m.project, m.repo) rather than a position among the visible
+// rows: it is what every other pane reads, so a filter that hides the
+// selected project must narrow the view, not move the user somewhere else.
 func (m Model) proj() scan.Project {
-	i := m.realIdx(paneProjects)
+	i := clamp(m.project, 0, len(m.items(paneProjects))-1)
 	if i < 0 || i >= len(m.report.Projects) {
 		return scan.Project{}
 	}
@@ -366,7 +405,7 @@ func (m Model) proj() scan.Project {
 
 func (m Model) selectedRepo() (gitx.Repo, bool) {
 	repos := m.proj().Repos
-	i := m.realIdx(paneRepos)
+	i := clamp(m.repo, 0, len(repos)-1)
 	if i < 0 || i >= len(repos) {
 		return gitx.Repo{}, false
 	}
@@ -401,18 +440,47 @@ func (m Model) listCount(p paneFocus) int {
 	return len(m.visible(p))
 }
 
-// cursor/get/set for the two panes whose cursor is the project/repo position
-// itself rather than an entry of m.cursors. Like every other cursor here, it
-// addresses a visible row.
+// selectedIndex is where a pane's cursor sits among the rows it shows. For the
+// list panes that is the stored number; for projects and repos it is the
+// position of the selected item, and -1 when a filter hides it -- the cursor
+// has nothing to paint itself against, but the selection is untouched.
 func (m Model) selectedIndex(p paneFocus) int {
 	switch p {
 	case paneProjects:
-		return m.project
+		return m.positionOf(p, clamp(m.project, 0, len(m.items(p))-1))
 	case paneRepos:
-		return m.repo
+		return m.positionOf(p, clamp(m.repo, 0, len(m.items(p))-1))
 	default:
 		return m.cursors[p]
 	}
+}
+
+// positionOf and itemAt are the two directions of that translation. The list
+// panes need neither: their cursor is a position and each row carries the item
+// it stands for.
+func (m Model) positionOf(p paneFocus, idx int) int {
+	for pos, it := range m.visible(p) {
+		if it.idx == idx {
+			return pos
+		}
+	}
+	return -1
+}
+
+func (m Model) itemAt(p paneFocus, pos int) int {
+	list := m.visible(p)
+	if pos < 0 || pos >= len(list) {
+		// a position off the screen moves nobody: the selection stays where
+		// the user left it instead of jumping to whatever row is nearest
+		switch p {
+		case paneProjects:
+			return m.project
+		case paneRepos:
+			return m.repo
+		}
+		return -1
+	}
+	return list[pos].idx
 }
 
 func (m Model) cursorFor(p paneFocus) int {
@@ -421,13 +489,13 @@ func (m Model) cursorFor(p paneFocus) int {
 
 // selectProject mutates: the receiver MUST be a pointer -- with a value
 // receiver the new project silently evaporated when the method returned.
-// The argument is a visible row position, the same thing a click or a digit
-// key produced.
-func (m *Model) selectProject(pos int) {
-	if pos == m.project {
+// The argument is an ITEM index; callers holding a row position translate it
+// through itemAt first.
+func (m *Model) selectProject(idx int) {
+	if idx == m.project {
 		return
 	}
-	m.project = clamp(pos, 0, m.listCount(paneProjects)-1)
+	m.project = clamp(idx, 0, len(m.items(paneProjects))-1)
 	m.repo = 0
 	m.cursors = map[paneFocus]int{}
 	m.commits = nil
@@ -437,8 +505,10 @@ func (m *Model) selectProject(pos int) {
 // clampCursors parks every cursor inside the rows its pane actually shows --
 // after a rescan, or after a filter hid the row someone was standing on.
 func (m *Model) clampCursors() {
-	m.project = clamp(m.project, 0, m.listCount(paneProjects)-1)
-	m.repo = clamp(m.repo, 0, m.listCount(paneRepos)-1)
+	// the selection is clamped against what EXISTS, not against what the
+	// filter lets through: narrowing a pane must never move the user
+	m.project = clamp(m.project, 0, len(m.items(paneProjects))-1)
+	m.repo = clamp(m.repo, 0, len(m.items(paneRepos))-1)
 	for p := range paneCount {
 		f := paneFocus(p)
 		if !m.feedReady(f) {
@@ -473,15 +543,15 @@ func (m Model) feedReady(p paneFocus) bool {
 // the last run, by PATH (the watched list can grow, indices must not be the
 // thing persisted). Both are positions in the visible rows.
 func (m *Model) selectByPath(projectPath, repoPath string) {
-	for pos, it := range m.visible(paneProjects) {
+	for _, it := range m.items(paneProjects) {
 		if m.report.Projects[it.idx].Path != projectPath {
 			continue
 		}
-		m.project = pos
+		m.project = it.idx
 		repos := m.proj().Repos
-		for rpos, rit := range m.visible(paneRepos) {
+		for _, rit := range m.items(paneRepos) {
 			if repos[rit.idx].Path == repoPath {
-				m.repo = rpos
+				m.repo = rit.idx
 				return
 			}
 		}
@@ -607,14 +677,18 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
 
 	if m.help {
-		// ctrl+d closes the help and pages the pane underneath, like a
-		// pager: the chord is taken, and a help screen that swallowed it
-		// twice would leave the user stuck on the first row of a long list
+		// characters are typed with the help on the screen: anything else
+		// closes it, and the keys a search needs stay reachable
 		switch key {
-		case "?", "esc", "q", "ctrl+c", "ctrl+d":
+		case "?", "esc", "q", "ctrl+c", "ctrl+d", "up", "down", "pgup", "pgdown", "pgdn",
+			"home", "end", "ctrl+u":
 			m.help = false
 		}
 		return m, nil
+	}
+
+	if m.filtering {
+		return m.onFilter(msg)
 	}
 
 	switch key {
@@ -622,6 +696,11 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.quit()
 	case "?":
 		m.help = true
+		return m, nil
+	case "/":
+		m.filtering = true
+		m.filterPane = m.focus
+		m.status = "" // the line is about to carry the needle
 		return m, nil
 	case "tab", "right":
 		m.cycleFocus(1)
@@ -633,6 +712,12 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cycleFocus(1)
 		return m, nil
 	case "shift+tab", "h", "left", "esc":
+		if key == "esc" && m.filterOn() && m.focus == m.filterPane {
+			// esc gets you out of the thing you are in: the first press drops
+			// the needle and shows the rows again, the next walks panes
+			m.setNeedle("")
+			return m, nil
+		}
 		if m.focus == paneProjects && key == "esc" {
 			return m, m.quit()
 		}
@@ -670,7 +755,7 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
 		i := int(key[0] - '1')
 		if i < m.listCount(paneProjects) {
-			m.selectProject(i)
+			m.selectProject(m.itemAt(paneProjects, i))
 			return m, m.commitSelection()
 		}
 		return m, nil
@@ -701,6 +786,86 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.actCopy()
 	}
 	return m, nil
+}
+
+// onFilter owns the keyboard while a search is open. Characters go to the
+// needle; the arrows and the page keys still walk the rows that survived, tab
+// moves the search to another pane without losing the word, enter leaves the
+// filter running and gives the keys back, and esc forgets it entirely. Every
+// one of those has an undo a user can reach without reading a manual.
+func (m Model) onFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key := msg.String(); key {
+	case "esc":
+		m.filtering = false
+		m.setNeedle("")
+		return m, nil
+	case "enter":
+		m.filtering = false // the needle stays on, the app keys come back
+		return m, nil
+	case "backspace":
+		r := []rune(m.filterText)
+		if len(r) > 0 {
+			m.setNeedle(string(r[:len(r)-1]))
+		}
+		return m, nil
+	case "ctrl+u", "ctrl+w":
+		m.setNeedle("")
+		return m, nil
+	case "ctrl+c":
+		// quitting outranks the input: a search that swallowed the only
+		// universal escape hatch would be a small trap
+		return m, m.quit()
+	case "tab":
+		m.retargetFilter(1)
+		return m, nil
+	case "shift+tab":
+		m.retargetFilter(-1)
+		return m, nil
+	case "up":
+		return m.moveCursor(-1)
+	case "down":
+		return m.moveCursor(1)
+	default:
+		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
+			m.setNeedle(m.filterText + string(msg.Runes))
+			return m, nil
+		}
+		return m, nil
+	}
+}
+
+// setNeedle is every change of the search text. A list pane goes back to its
+// first match -- standing on row seven of a list that now has two rows is not
+// keeping context -- while projects and repos only get clamped, because there
+// the cursor IS the selection and moving it would redraw every other pane.
+func (m *Model) setNeedle(s string) {
+	m.filterText = s
+	switch m.filterPane {
+	case paneProjects, paneRepos:
+	default:
+		m.cursors[m.filterPane] = 0
+	}
+	m.clampCursors()
+}
+
+// retargetFilter hands the same word to another pane: "moodle" is a question
+// the whole cockpit can answer, and asking it of the sessions, then the
+// commits, then the notes should not mean typing it again.
+func (m *Model) retargetFilter(step int) {
+	order := m.focusOrder()
+	pos := -1
+	for i, p := range order {
+		if p == m.filterPane {
+			pos = i
+		}
+	}
+	if pos < 0 {
+		m.filterPane = order[0]
+	} else {
+		n := len(order)
+		m.filterPane = order[((pos+step)%n+n)%n]
+	}
+	m.clampCursors()
 }
 
 // envAction maps the ENV pane's keys onto `docker compose`, always shown
@@ -775,10 +940,10 @@ func (m Model) setCursorPos(p paneFocus, pos int) (tea.Model, tea.Cmd) {
 	pos = clamp(pos, 0, n-1)
 	switch p {
 	case paneProjects:
-		m.selectProject(pos)
+		m.selectProject(m.itemAt(p, pos))
 		return m, m.commitSelection()
 	case paneRepos:
-		m.repo = pos
+		m.repo = m.itemAt(p, pos)
 		return m, m.commitSelection()
 	}
 	m.cursors[p] = pos
@@ -789,7 +954,17 @@ func (m Model) setCursorPos(p paneFocus, pos int) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) moveCursor(dy int) (tea.Model, tea.Cmd) {
-	return m.setCursorPos(m.focus, m.selectedIndex(m.focus)+dy)
+	pos := m.selectedIndex(m.focus)
+	if pos < 0 {
+		// a filter is hiding the selection: the first press takes the user to
+		// the nearest edge of what is on screen instead of counting from a
+		// row that is not there
+		if dy > 0 {
+			return m.setCursorPos(m.focus, 0)
+		}
+		return m.setCursorPos(m.focus, m.listCount(m.focus)-1)
+	}
+	return m.setCursorPos(m.focus, pos+dy)
 }
 
 // movePage jumps by what the pane can actually show. The rows are the height
@@ -1095,7 +1270,18 @@ func (m Model) View() string {
 func (m Model) legend() string {
 	type kb struct{ key, label string }
 	var keys, tail []kb
-	if m.focus == paneEnv {
+	switch {
+	case m.filtering:
+		keys = []kb{
+			{"chars", "needle"},
+			{"backspace", "edit"},
+			{"tab", "pane"},
+			{"↑/↓", "rows"},
+			{"enter", "keep"},
+			{"esc", "clear"},
+		}
+		tail = []kb{{"ctrl+c", "quit"}}
+	case m.focus == paneEnv:
 		keys = []kb{
 			{"u", "up"},
 			{"s", "stop"},
@@ -1106,7 +1292,7 @@ func (m Model) legend() string {
 			{"tab", "panes"},
 		}
 		tail = []kb{{"?", "help"}, {"q", "quit"}}
-	} else {
+	default:
 		keys = []kb{
 			{"tab/h/l", "panes"},
 			{"↑/↓", "move"},
@@ -1116,6 +1302,9 @@ func (m Model) legend() string {
 			{"d", "note"},
 		}
 		tail = []kb{{"?", "help"}, {"r", "rescan"}, {"q", "quit"}}
+	}
+	if m.filterOn() && !m.filtering {
+		keys = append(keys, kb{"esc", "clear filter"})
 	}
 	if m.listCount(m.focus) > m.geom().innerH(m.focus) {
 		keys = append(keys, kb{"pgup/dn", "page"}, kb{"home/end", "top"})
@@ -1191,13 +1380,14 @@ func (m Model) paneProjects(g geom) string {
 		default:
 			label = padR(label, inner-3) + green("✓")
 		}
-		lines = append(lines, m.fillRow(paneProjects, "> "+label, pos == m.project, inner))
+		lines = append(lines, m.fillRow(paneProjects, "> "+label, it.idx == m.project, inner))
 	}
 	if len(lines) == 0 {
-		lines = []string{dim("(no projects)")}
+		lines = []string{m.emptyNote(paneProjects, "(no projects)", inner)}
 	}
-	return pane(m.focus == paneProjects, fmt.Sprintf("PROJECTS · %d", len(m.report.Projects)), w, h,
-		listWindow(lines, m.project, h-2, inner))
+	title := fmt.Sprintf("PROJECTS · %d", len(m.report.Projects)) + m.filterMark(paneProjects)
+	return pane(m.focus == paneProjects, title, w, h,
+		listWindow(lines, m.selectedIndex(paneProjects), h-2, inner))
 }
 
 // repoState is the coloured status suffix for one repository. The widest
@@ -1228,19 +1418,20 @@ func (m Model) paneRepos(g geom) string {
 	inner := w - 4
 	repos := m.proj().Repos
 	var lines []string
-	for pos, it := range m.visible(paneRepos) {
+	for _, it := range m.visible(paneRepos) {
 		r := repos[it.idx]
 		label := padR(clip(filepath.Base(r.Path), inner-14), inner-14) + repoState(r)
-		lines = append(lines, m.fillRow(paneRepos, "> "+label, pos == m.repo, inner))
+		lines = append(lines, m.fillRow(paneRepos, "> "+label, it.idx == m.repo, inner))
 	}
 	if len(lines) == 0 {
-		lines = []string{dim("(no repositories)")}
+		lines = []string{m.emptyNote(paneRepos, "(no repositories)", inner)}
 	}
 	title := "REPOSITORIES"
 	if n := m.proj().Name; n != "" {
 		title += " · " + n
 	}
-	return pane(m.focus == paneRepos, title, w, h, listWindow(lines, m.repo, h-2, inner))
+	return pane(m.focus == paneRepos, title+m.filterMark(paneRepos), w, h,
+		listWindow(lines, m.selectedIndex(paneRepos), h-2, inner))
 }
 
 // openInParts is the launcher list: the git-status row menu's keys, same
@@ -1337,6 +1528,7 @@ func (m Model) paneEnv(g geom) string {
 	if len(m.envSvcs) > 0 {
 		title += fmt.Sprintf(" · %d/%d up", up, len(m.envSvcs))
 	}
+	title += m.filterMark(paneEnv)
 	inner := w - 4
 	var lines []string
 	switch {
@@ -1384,7 +1576,7 @@ func (m Model) paneCommits(g geom) string {
 		title = clip("COMMITS · "+repo.Branch, inner)
 		lines = []string{m.spinner.View() + dim(" loading…")}
 	default:
-		title = clip(fmt.Sprintf("COMMITS · %s · %d", repo.Branch, len(m.commits)), inner)
+		title = clip(fmt.Sprintf("COMMITS · %s · %d", repo.Branch, len(m.commits))+m.filterMark(paneCommits), inner)
 		for pos, it := range m.visible(paneCommits) {
 			c := m.commits[it.idx]
 			// hash | subject | author | age: fixed visible columns
@@ -1394,7 +1586,7 @@ func (m Model) paneCommits(g geom) string {
 			lines = append(lines, m.fillRow(paneCommits, "> "+line, pos == m.cursors[paneCommits], inner))
 		}
 		if len(lines) == 0 {
-			lines = []string{dim("(no commits)")}
+			lines = []string{m.emptyNote(paneCommits, "(no commits)", inner)}
 		}
 	}
 	return pane(m.focus == paneCommits, title, w, h,
@@ -1407,6 +1599,11 @@ func (m Model) paneCommits(g geom) string {
 // width: the box does not wrap, it grows, and a frame wider than the window
 // loses its border.
 func (m Model) emptyNote(p paneFocus, placeholder string, innerW int) string {
+	if m.filterOn() && p == m.filterPane {
+		// the rows are there, the word just does not reach them: say both
+		return dim(clip(fmt.Sprintf("⌕ nothing here matches %q (of %d)",
+			m.filterText, len(m.items(p))), innerW-2))
+	}
 	why, broken := m.feedMsg(p)
 	if why == "" {
 		return dim(placeholder)
@@ -1426,7 +1623,7 @@ func (m Model) paneSessions(g geom) string {
 	if repo, ok := m.selectedRepo(); ok {
 		scope = filepath.Base(repo.Path)
 	}
-	title := clip(fmt.Sprintf("SESSIONS · %s · %d", scope, len(list))+m.warn(paneSessions), inner)
+	title := clip(fmt.Sprintf("SESSIONS · %s · %d", scope, len(list))+m.warn(paneSessions)+m.filterMark(paneSessions), inner)
 	var lines []string
 	for pos, it := range m.visible(paneSessions) {
 		s := list[it.idx]
@@ -1445,7 +1642,7 @@ func (m Model) paneNotes(g geom) string {
 	w, h := g.rightW, g.notesH
 	inner := w - 4
 	notes := m.proj().Notes
-	title := clip(fmt.Sprintf("NOTES · %d", len(notes))+m.warn(paneNotes), inner)
+	title := clip(fmt.Sprintf("NOTES · %d", len(notes))+m.warn(paneNotes)+m.filterMark(paneNotes), inner)
 	var lines []string
 	for pos, it := range m.visible(paneNotes) {
 		n := notes[it.idx]
@@ -1460,43 +1657,108 @@ func (m Model) paneNotes(g geom) string {
 		listWindow(lines, m.cursors[paneNotes], h-2, inner))
 }
 
+// helpView is a help screen that has to survive a 60-column window and a
+// 22-row one. Rows are laid out from key/label pairs that wrap BETWEEN pairs
+// (never inside an escape sequence, and never mid-word where it would add a
+// row the frame did not count for), and the whole is cut to the rows the
+// window has -- a help overlay that scrolls off the bottom hides the keys it
+// was opened to explain. The groups are ordered so the keys that get you out
+// are the last ones to disappear.
+// helpPair is one key with the thing it does, the unit the help screen lays
+// out with.
+type helpPair struct{ key, label string }
+
 func (m Model) helpView() string {
-	rows := []string{
-		accent("panes"),
-		"  " + keyStyle("tab") + dim(" / ") + keyStyle("l · →") + dim(" next pane    ") +
-			keyStyle("h · ← · esc") + dim(" previous pane (esc quits at projects)") + "\n" +
-			"  " + keyStyle("mouse") + dim(" click focuses and selects, wheel moves"),
-		accent("lists"),
-		"  " + keyStyle("↑↓ · jk") + dim(" one row    ") + keyStyle("pgup · pgdn") + dim(" page    ") +
-			keyStyle("ctrl+u · ctrl+d") + dim(" half page    ") + keyStyle("home · end") + dim(" first, last"),
-		accent("projects"),
-		"  " + keyStyle("1-9") + dim(" jump to project    ") + keyStyle("enter") + dim(" drill into its repos"),
-		accent("repos"),
-		"  " + keyStyle("enter") + dim(" or ") + keyStyle("g") + dim(" lazygit    ") +
-			keyStyle("t") + dim(" terminal    ") + keyStyle("c") + dim(" code    ") +
-			keyStyle("a") + " " + dim("agent    ") + keyStyle("e") + dim(" explorer    ") + keyStyle("y") + dim(" copy path"),
-		accent("context panes"),
-		"  " + keyStyle("s") + " " + dim("resume session    ") + keyStyle("d") + dim(" open note    ") +
-			keyStyle("enter") + dim(" commits: copy sha · sessions: resume · notes: open"),
-		accent("env · docker compose"),
-		"  " + keyStyle("u") + dim(" up    ") + keyStyle("s") + dim(" stop    ") +
-			keyStyle("d") + dim(" down    ") + keyStyle("r") + dim(" restart    ") + keyStyle("l") + dim(" logs    ") +
-			keyStyle("x") + dim(" shell — in a terminal, on the selected service"),
-		accent("app"),
-		"  " + keyStyle("r") + dim(" rescan    ") + keyStyle("T") + dim(" reload theme and agent    ") +
-			keyStyle("?") + dim(" this help    ") + keyStyle("q") + dim(" quit"),
+	groups := []struct {
+		title string
+		pairs []helpPair
+	}{
+		{"app", []helpPair{
+			{"q", "quit"}, {"esc", "back a pane"}, {"?", "this help"},
+			{"r", "rescan"}, {"T", "reload theme and agent"},
+		}},
+		{"panes", []helpPair{
+			{"tab · l · →", "next pane"}, {"h · ←", "previous pane"},
+			{"mouse", "click focuses and selects, wheel moves"},
+		}},
+		{"lists", []helpPair{
+			{"↑↓ · jk", "one row"}, {"pgup · pgdown", "page"},
+			{"ctrl+u · ctrl+d", "half page"}, {"home · end", "first, last"},
+		}},
+		{"filter", []helpPair{
+			{"/", "narrow the focused pane"}, {"tab", "give the word to the next pane"},
+			{"enter", "keep it, keys back"}, {"esc", "clear it"},
+			{"", "in order, case and accents ignored; rows keep their order"},
+		}},
+		{"projects", []helpPair{
+			{"1-9", "jump to project"}, {"enter", "drill into its repos"},
+		}},
+		{"repos · the OPEN IN bar", []helpPair{
+			{"g", "lazygit"}, {"t", "terminal"}, {"c", "code"}, {"a", "agent"},
+			{"e", "explorer"}, {"y", "copy path"},
+		}},
+		{"context panes", []helpPair{
+			{"s", "resume session"}, {"d", "open note"}, {"enter", "commits: sha · sessions: resume · notes: open"},
+		}},
+		{"env · docker compose", []helpPair{
+			{"u", "up"}, {"s", "stop"}, {"d", "down"}, {"r", "restart"},
+			{"l", "logs"}, {"x", "shell — always in a terminal"},
+		}},
 	}
+
 	innerW := min(m.width-8, 96)
-	body := strings.Join(rows, "\n")
-	// stay one row under the window, same rule as the frame: the
-	// renderer's cursor needs the last row to exist
-	h := min(lipgloss.Height(body)+2, m.height-3)
+	var lines []string
+	for _, g := range groups {
+		lines = append(lines, accent(g.title))
+		lines = append(lines, helpRows(g.pairs, innerW)...)
+	}
+	// status + legend + the row the renderer needs to exist + the box borders
+	if room := m.height - 6; len(lines) > room {
+		lines = lines[:room]
+	}
+	body := strings.Join(lines, "\n")
+	h := min(len(lines)+2, m.height-3)
 	return lipgloss.Place(m.width, m.height-1, lipgloss.Center, lipgloss.Center,
-		pane(true, "HELP", innerW+2, h, body))
+		pane(true, "HELP · esc", innerW+2, h, body))
 }
 
-// statusLine carries, in order of urgency: the last action, the open
-// todos of the session under the cursor (while the SESSIONS pane is
+// helpRows packs key/label pairs onto rows no wider than w, wrapping between
+// pairs the way the launcher bar does.
+func helpRows(pairs []helpPair, w int) []string {
+	const glue = " · "
+	var lines, cur []string
+	width := 0
+	fit := func(s string) int { return lipgloss.Width(s) }
+	for _, p := range pairs {
+		part := keyStyle(p.key)
+		if p.label != "" {
+			part += dim(" " + p.label)
+		}
+		n := fit(part)
+		if n > w {
+			part = dim(clip(p.label, max(1, w-fit(p.key)-1)))
+			part = keyStyle(p.key) + part
+			n = fit(part)
+		}
+		if len(cur) > 0 && width+len(glue)+n > w {
+			lines = append(lines, strings.Join(cur, dim(glue)))
+			cur, width = nil, 0
+		}
+		if len(cur) > 0 {
+			width += len(glue)
+		}
+		cur = append(cur, part)
+		width += n
+	}
+	if len(cur) > 0 {
+		lines = append(lines, strings.Join(cur, dim(glue)))
+	}
+	return lines
+}
+
+// statusLine carries, in order of urgency: the last action (which lives four
+// seconds and then gets out of the way), the search if one is running, the
+// open todos of the session under the cursor (while the SESSIONS pane is
 // focused -- "what was left hanging in here"), the reason a feed is broken
 // (while the pane that reads it is focused), or the project path.
 func (m Model) statusLine() string {
@@ -1504,6 +1766,10 @@ func (m Model) statusLine() string {
 	switch {
 	case m.status != "":
 		left = dim(clip(strings.ReplaceAll(m.status, "\n", " "), m.width/2))
+	case m.filtering || m.filterOn():
+		// the needle takes the line the moment an action's echo expires: a
+		// filter the user cannot read is worse than no filter at all
+		left = m.filterLine(m.width / 2)
 	case m.focus == paneSessions && len(m.todos) > 0:
 		left = m.todosLine()
 	default:
@@ -1533,6 +1799,25 @@ func (m Model) statusLine() string {
 		pad = 1
 	}
 	return left + strings.Repeat(" ", pad) + right
+}
+
+// filterLine is the search itself: the needle, the pane wearing it, and how
+// many rows survived -- that count is what tells a narrowing from a wipeout.
+// Everything is clipped while still plain text, because the status line has no
+// room to spare and a styled string cut in half paints garbage for a row.
+func (m Model) filterLine(budget int) string {
+	name := paneNames[m.filterPane]
+	stats := dim(fmt.Sprintf(" · %s · %d/%d", name, m.listCount(m.filterPane), len(m.items(m.filterPane))))
+	if m.filterText == "" {
+		hint := "type to filter · esc closes · tab moves the word"
+		return accent("⌕") + dim(" "+clip(hint, max(1, budget-lipgloss.Width(stats)-2))) + stats
+	}
+	caret := ""
+	if m.filtering {
+		caret = accent("▏") // a caret the user can see themselves typing into
+	}
+	return accent("⌕ ") +
+		keyStyle(clip(m.filterText, max(1, budget-lipgloss.Width(stats)-2))) + caret + stats
 }
 
 // todosLine renders "N open: a · b · c" for the selected session: each

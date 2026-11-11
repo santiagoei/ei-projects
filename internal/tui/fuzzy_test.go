@@ -10,7 +10,7 @@ func TestFuzzyMatch(t *testing.T) {
 		{"Auditoría y curaduría de ia_logs", "auditoria", true}, // accents folded
 		{"Auditoría y curaduría de ia_logs", "AUDITORÍA", true}, // and case
 		{"Auditoría y curaduría de ia_logs", "curad", true},
-		{"Auditoría y curaduría de ia_logs", "iao", true}, // in order, far apart
+		{"Auditoría y curaduría de ia_logs", "iao", true},           // in order, far apart
 		{"Auditoría y curaduría de ia_logs", "logs auditor", false}, // out of order
 		{"Auditoría y curaduría de ia_logs", "zzz", false},
 		{"50 tr/tr.fei/tr.fei.upgrade_a_4.5_OK.md", "trfeiup", true},

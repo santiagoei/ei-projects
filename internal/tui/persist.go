@@ -80,16 +80,12 @@ func (m Model) persist() {
 	}
 	s.Cursors = map[string]int{}
 	for f, name := range paneNames {
-		// projects and repos keep their position in m.project/m.repo, not in
-		// m.cursors, but they are cursors like any other to the next run
-		pos := m.cursors[f]
-		switch f {
-		case paneProjects:
-			pos = m.project
-		case paneRepos:
-			pos = m.repo
+		// projects and repos are not in here: they round-trip by path, which
+		// survives a watched list that grew or reordered between runs
+		if f == paneProjects || f == paneRepos {
+			continue
 		}
-		if pos != 0 {
+		if pos := m.cursors[f]; pos != 0 {
 			s.Cursors[name] = pos
 		}
 	}
@@ -115,9 +111,8 @@ func (m *Model) restoreCursors(s persisted) {
 		if !ok {
 			continue
 		}
-		switch p {
-		case paneProjects, paneRepos:
-			continue // already restored by the path lookup, which is sturdier
+		if p == paneProjects || p == paneRepos {
+			continue // they round-trip by path, which is sturdier than a number
 		}
 		if pos > 0 {
 			m.cursors[p] = pos

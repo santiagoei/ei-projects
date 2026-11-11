@@ -60,7 +60,18 @@ like "there are only 3".
 Six focusable panes — projects, repos, the conditional **ENV** (shown
 only while the selected project has a docker environment), commits,
 sessions, notes — tab, or a click, walks them, titles sitting on the
-border, lazygit-style. OPEN IN is a one-line bar: the git-status row
+border, lazygit-style. A cursor is always a *row*, never an index: the
+item it stands for is resolved through the rows that are on screen, which
+is what lets a filter narrow a pane without moving the selection or
+letting a keystroke act on the wrong repository.
+
+`/` filters the focused pane — characters in order, case and accents
+ignored, and the rows keeping their own order (a session list is
+chronology, a commit list is history, and a filter that sorted by score
+would bury the newest thing under a better-looking one). One pane at a
+time, because a cockpit with every pane half-empty makes "there is
+nothing here" and "it did not match" indistinguishable; `tab` hands the
+same word to the next pane, and a pane filtered down to nothing says so. OPEN IN is a one-line bar: the git-status row
 menu's keys, same letters same meaning, acting on the selected repository.
 Commits load on demand for that repo (`git log`, newest 15); sessions
 narrow to it (falling back to the project's list) and carry their open
@@ -98,6 +109,7 @@ Navigation (the footer bar):
 | `tab` `l` `→` / `h` `←` `esc` | cycle the panes: projects → repos → (env) → commits → sessions → notes (`esc` at projects quits) |
 | `↑/↓` `j/k` | move within the focused pane                      |
 | `pgup/pgdn` `home/end` `ctrl+u/d` | page, jump to first/last, half page — by the rows the pane paints, not the window's |
+| `/` | filter the focused pane · `tab` gives the word to the next pane · `enter` keeps it and hands the keys back · `esc` clears it |
 | `enter`     | projects: to repos · repos: lazygit · commits: copy sha · sessions: resume · notes: open |
 | `s` / `d`   | resume the marked session / open the marked note  |
 | `1`–`9`     | jump to project N                                 |

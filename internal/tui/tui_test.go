@@ -288,6 +288,82 @@ func TestFeedErrorsAreVisible(t *testing.T) {
 	}
 }
 
+// The cursor of every pane addresses a VISIBLE ROW, and the item it stands
+// for is resolved through the row. While nothing is filtered the two numbers
+// are equal; this pins the mapping so a later filter cannot quietly move the
+// target out from under the cursor, and so no action can index a backing
+// slice with a position that is off the end of it.
+func TestCursorPositionsResolveToRows(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	rep := testReport()
+	rep.Projects[1].EnvFile = "/p/icampus.fei.org/docker-compose.yml"
+
+	m := New(&config.Config{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: rep})
+	m.selectProject(1)
+	m = drive(t, m, commitsDoneMsg{repoPath: m.proj().Repos[1].Path, commits: []gitx.Commit{
+		{Hash: "97d5fe3", Subject: "Move files", Author: "santiago"},
+		{Hash: "82cde26", Subject: "Audit", Author: "santiago"},
+	}})
+	m.envSvcs = []env.Service{{Name: "web", State: "running"}, {Name: "db", State: "exited"}}
+
+	backing := func(p paneFocus) int {
+		switch p {
+		case paneProjects:
+			return len(m.report.Projects)
+		case paneRepos:
+			return len(m.proj().Repos)
+		case paneEnv:
+			return len(m.envSvcs)
+		case paneCommits:
+			return len(m.commits)
+		case paneSessions:
+			return len(m.sessionsFor())
+		default:
+			return len(m.proj().Notes)
+		}
+	}
+	set := func(p paneFocus, pos int) Model {
+		nm, _ := m.setCursorPos(p, pos)
+		return nm.(Model)
+	}
+
+	for _, p := range m.focusOrder() {
+		n := backing(p)
+		if got := m.listCount(p); got != n {
+			t.Fatalf("pane %d rows: %d, want %d", p, got, n)
+		}
+		for pos := 0; pos < n; pos++ {
+			m = set(p, pos)
+			if got := m.realIdx(p); got != pos {
+				t.Fatalf("pane %d pos %d resolved to index %d", p, pos, got)
+			}
+			if _, ok := m.rowAt(p); !ok {
+				t.Fatalf("pane %d pos %d has no row", p, pos)
+			}
+		}
+		// past the end clamps instead of falling off the list
+		m = set(p, n+5)
+		if got := m.realIdx(p); n == 0 {
+			if got != -1 {
+				t.Fatalf("empty pane %d resolved to %d", p, got)
+			}
+		} else if got != n-1 {
+			t.Fatalf("pane %d clamped to %d, want %d", p, got, n-1)
+		}
+	}
+
+	// a wheel over a pane that is not focused moves it without stealing focus
+	m.focus = paneProjects
+	before := m.focus
+	nm, _ := m.setCursorPos(paneSessions, 1)
+	m = nm.(Model)
+	if m.focus != before {
+		t.Fatal("moving another pane stole the focus")
+	}
+}
+
 // Open todos of the selected session appear in the status line while the
 // SESSIONS pane holds focus.
 func TestTodosInStatusLine(t *testing.T) {

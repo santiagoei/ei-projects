@@ -71,6 +71,15 @@ type envDoneMsg struct {
 	err      error
 }
 
+// statusExpireMsg carries the generation of the line it belongs to: a tick
+// armed by an older message must not wipe out the newer one that replaced it.
+type statusExpireMsg struct{ gen int }
+
+// statusTTL is how long an action's echo stays on the status line -- long
+// enough to read, short enough not to hide the session todos or the feed
+// note underneath it.
+const statusTTL = 4 * time.Second
+
 type Model struct {
 	cfg     *config.Config
 	report  scan.Report
@@ -98,6 +107,9 @@ type Model struct {
 	width  int
 	height int
 	status string
+	// statusGen counts the status lines set: only the tick armed by the
+	// newest one is allowed to clear it.
+	statusGen int
 }
 
 func New(cfg *config.Config) Model {
@@ -163,12 +175,11 @@ func (m *Model) todosCmd() tea.Cmd {
 }
 
 func (m Model) selectedSessionID() string {
-	list := m.sessionsFor()
-	i := m.cursors[paneSessions]
-	if i < 0 || i >= len(list) {
+	repo, ok := m.rowAt(paneSessions)
+	if !ok {
 		return ""
 	}
-	return list[i].ID
+	return m.sessionsFor()[repo.idx].ID
 }
 
 // envCmd refreshes the compose service state of the selected project.
@@ -244,19 +255,110 @@ func (m *Model) cycleFocus(step int) {
 
 // -------------------------------------------------------------- selection
 
+// item is one row of a pane: the index of the thing it stands for, and the
+// plain text a filter matches against.
+//
+// The cursor of every pane is a POSITION in the pane's visible rows, never an
+// index into a backing slice. Those two are the same number while nothing is
+// filtered, and different the moment something is -- and acting on the
+// position would then hit a row the user is not looking at. Everything that
+// needs "the row under the cursor" goes through realIdx, so there is only one
+// place where the mapping can be wrong.
+type item struct {
+	idx   int
+	label string
+}
+
+// items lists a pane's rows in display order, unfiltered. It is the one place
+// that knows what each pane holds: the renderers, the click map, the clamps,
+// the layout and every action read through it.
+func (m Model) items(p paneFocus) []item {
+	switch p {
+	case paneProjects:
+		out := make([]item, 0, len(m.report.Projects))
+		for i, proj := range m.report.Projects {
+			out = append(out, item{idx: i, label: proj.Name + " " + proj.Path})
+		}
+		return out
+	case paneRepos:
+		repos := m.proj().Repos
+		out := make([]item, 0, len(repos))
+		for i, r := range repos {
+			out = append(out, item{idx: i, label: filepath.Base(r.Path) + " " + r.Branch})
+		}
+		return out
+	case paneEnv:
+		out := make([]item, 0, len(m.envSvcs))
+		for i, s := range m.envSvcs {
+			out = append(out, item{idx: i, label: s.Name + " " + s.State})
+		}
+		return out
+	case paneCommits:
+		out := make([]item, 0, len(m.commits))
+		for i, c := range m.commits {
+			out = append(out, item{idx: i, label: c.Hash + " " + c.Subject + " " + c.Author})
+		}
+		return out
+	case paneSessions:
+		list := m.sessionsFor()
+		out := make([]item, 0, len(list))
+		for i, s := range list {
+			out = append(out, item{idx: i, label: s.Title + " " + s.Directory})
+		}
+		return out
+	case paneNotes:
+		notes := m.proj().Notes
+		out := make([]item, 0, len(notes))
+		for i, n := range notes {
+			out = append(out, item{idx: i, label: n.Rel})
+		}
+		return out
+	}
+	return nil
+}
+
+// visible is a pane's rows after the active filter. It is the seam the filter
+// hangs on: everything above it is the world, everything below is what the
+// user is looking at.
+func (m Model) visible(p paneFocus) []item {
+	return m.items(p)
+}
+
+// rowAt is the item under the pane's cursor.
+func (m Model) rowAt(p paneFocus) (item, bool) {
+	list := m.visible(p)
+	i := m.selectedIndex(p)
+	if i < 0 || i >= len(list) {
+		return item{}, false
+	}
+	return list[i], true
+}
+
+// realIdx resolves the cursor's position to the index of the row it points
+// at; -1 when the pane holds nothing.
+func (m Model) realIdx(p paneFocus) int {
+	it, ok := m.rowAt(p)
+	if !ok {
+		return -1
+	}
+	return it.idx
+}
+
 func (m Model) proj() scan.Project {
-	if m.project < 0 || m.project >= len(m.report.Projects) {
+	i := m.realIdx(paneProjects)
+	if i < 0 || i >= len(m.report.Projects) {
 		return scan.Project{}
 	}
-	return m.report.Projects[m.project]
+	return m.report.Projects[i]
 }
 
 func (m Model) selectedRepo() (gitx.Repo, bool) {
 	repos := m.proj().Repos
-	if m.repo < 0 || m.repo >= len(repos) {
+	i := m.realIdx(paneRepos)
+	if i < 0 || i >= len(repos) {
 		return gitx.Repo{}, false
 	}
-	return repos[m.repo], true
+	return repos[i], true
 }
 
 // sessionsFor narrows the project's session list to the selected repo:
@@ -281,28 +383,15 @@ func (m Model) sessionsFor() []agent.Session {
 	return out
 }
 
-// listCount is the row count of the focus panes that have their own cursor
-// (the list panes; projects/repos move through m.project / m.repo).
+// listCount is the number of rows a pane shows -- the rows the user can land
+// on, which is not the number of items it holds once a filter is on.
 func (m Model) listCount(p paneFocus) int {
-	switch p {
-	case paneProjects:
-		return len(m.report.Projects)
-	case paneRepos:
-		return len(m.proj().Repos)
-	case paneEnv:
-		return len(m.envSvcs)
-	case paneCommits:
-		return len(m.commits)
-	case paneSessions:
-		return len(m.sessionsFor())
-	case paneNotes:
-		return len(m.proj().Notes)
-	}
-	return 0
+	return len(m.visible(p))
 }
 
-// cursor/get/set for the two panes whose "cursor" is the project/repo
-// index itself rather than an entry of m.cursors.
+// cursor/get/set for the two panes whose cursor is the project/repo position
+// itself rather than an entry of m.cursors. Like every other cursor here, it
+// addresses a visible row.
 func (m Model) selectedIndex(p paneFocus) int {
 	switch p {
 	case paneProjects:
@@ -314,27 +403,59 @@ func (m Model) selectedIndex(p paneFocus) int {
 	}
 }
 
-func (m Model) cursorFor(p paneFocus, n int) int {
-	return clamp(m.selectedIndex(p), 0, n-1)
+func (m Model) cursorFor(p paneFocus) int {
+	return clamp(m.selectedIndex(p), 0, m.listCount(p)-1)
 }
 
 // selectProject mutates: the receiver MUST be a pointer -- with a value
 // receiver the new project silently evaporated when the method returned.
-func (m *Model) selectProject(i int) {
-	if i == m.project {
+// The argument is a visible row position, the same thing a click or a digit
+// key produced.
+func (m *Model) selectProject(pos int) {
+	if pos == m.project {
 		return
 	}
-	m.project = clamp(i, 0, len(m.report.Projects)-1)
+	m.project = clamp(pos, 0, m.listCount(paneProjects)-1)
 	m.repo = 0
 	m.cursors = map[paneFocus]int{}
 	m.commits = nil
 	m.commitsFor = ""
 }
 
-// commitSelection persists the project/repo pair by path (not index: the
-// watched list can grow between sessions) and refreshes every feed that
-// hangs off the selection: history, the selected session's todos, the
-// compose state.
+// clampCursors parks every cursor inside the rows its pane actually shows --
+// after a rescan, or after a filter hid the row someone was standing on.
+func (m *Model) clampCursors() {
+	m.project = clamp(m.project, 0, m.listCount(paneProjects)-1)
+	m.repo = clamp(m.repo, 0, m.listCount(paneRepos)-1)
+	for p := range paneCount {
+		m.cursors[paneFocus(p)] = m.cursorFor(paneFocus(p))
+	}
+}
+
+// selectByPath parks the selection on the project/repo pair remembered from
+// the last run, by PATH (the watched list can grow, indices must not be the
+// thing persisted). Both are positions in the visible rows.
+func (m *Model) selectByPath(projectPath, repoPath string) {
+	for pos, it := range m.visible(paneProjects) {
+		if m.report.Projects[it.idx].Path != projectPath {
+			continue
+		}
+		m.project = pos
+		repos := m.proj().Repos
+		for rpos, rit := range m.visible(paneRepos) {
+			if repos[rit.idx].Path == repoPath {
+				m.repo = rpos
+				return
+			}
+		}
+		return
+	}
+}
+
+// commitSelection is what every change of selection must do: persist the
+// project/repo pair by path (not index: the watched list can grow between
+// sessions) and refresh every feed that hangs off the selection -- history,
+// the selected session's todos, the compose state.
 func (m *Model) commitSelection() tea.Cmd {
 	m.persistSelection()
 	return tea.Batch(m.commitsCmd(), m.todosCmd(), m.envCmd())
@@ -352,47 +473,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case scanDoneMsg:
 		m.loading = false
 		if msg.err != nil {
-			m.status = "scan failed: " + msg.err.Error()
-			return m, nil
+			return m, m.setStatus("scan failed: " + msg.err.Error())
 		}
 		m.report = msg.report
 		m.scannedAt = time.Now()
 		if !m.restored {
 			m.restored = true
 			if p, r := loadSelection(); p != "" {
-				for i, proj := range m.report.Projects {
-					if proj.Path == p {
-						m.project = i
-						for j, repo := range proj.Repos {
-							if repo.Path == r {
-								m.repo = j
-								break
-							}
-						}
-						break
-					}
-				}
+				m.selectByPath(p, r)
 			}
 		}
-		m.project = clamp(m.project, 0, len(m.report.Projects)-1)
-		if repos := m.proj().Repos; m.repo >= len(repos) {
-			m.repo = clamp(m.repo, 0, len(repos)-1)
-		}
-		for p := range paneCount {
-			m.cursors[paneFocus(p)] = clamp(m.cursors[paneFocus(p)], 0, m.listCount(paneFocus(p))-1)
-		}
+		m.clampCursors()
 		return m, tea.Batch(m.commitsCmd(), m.todosCmd(), m.envCmd())
 
 	case commitsDoneMsg:
+		m.commitsLoading = false
 		if repo, ok := m.selectedRepo(); ok && repo.Path == msg.repoPath {
 			m.commits = msg.commits
 			m.commitsFor = msg.repoPath
 			if msg.err != nil {
-				m.status = "commits: " + msg.err.Error()
+				return m, tea.Batch(m.setStatus("commits: "+firstLine(msg.err.Error())), m.tickIfBusy())
 			}
 		}
-		m.commitsLoading = false
-		m.cursors[paneCommits] = clamp(m.cursors[paneCommits], 0, len(m.commits)-1)
+		m.cursors[paneCommits] = m.cursorFor(paneCommits)
 		return m, m.tickIfBusy()
 
 	case todosDoneMsg:
@@ -413,7 +516,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.envErr = firstLine(msg.err.Error())
 		}
-		m.cursors[paneEnv] = clamp(m.cursors[paneEnv], 0, len(m.envSvcs)-1)
+		m.cursors[paneEnv] = m.cursorFor(paneEnv)
 		return m, m.tickIfBusy()
 
 	case envTickMsg:
@@ -422,6 +525,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(envTick(), envFetch(p.EnvFile))
 		}
 		return m, envTick()
+
+	case statusExpireMsg:
+		if msg.gen == m.statusGen && m.status != "" {
+			m.status = ""
+		}
+		return m, nil
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -482,8 +591,8 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// keys they would otherwise steal: r restarts instead of rescanning,
 	// d brings services down instead of opening a note.
 	if m.focus == paneEnv {
-		if handled := m.envAction(key); handled {
-			return m, nil
+		if handled, cmd := m.envAction(key); handled {
+			return m, cmd
 		}
 	}
 
@@ -492,13 +601,14 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		// force every on-demand feed to refetch after the rescan
 		m.commitsFor, m.todosFor, m.envFetched = "", "", false
-		return m, tea.Batch(m.scanCmd(), m.spinner.Tick)
+		return m, tea.Batch(m.setStatus("rescanning…"), m.scanCmd(), m.spinner.Tick)
 	}
 
-	// Project jump digits: global, like lazygit's global keys.
+	// Project jump digits: global, like lazygit's global keys. The digit is a
+	// row position, so with a filter on it means the Nth visible project.
 	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
 		i := int(key[0] - '1')
-		if i < len(m.report.Projects) {
+		if i < m.listCount(paneProjects) {
 			m.selectProject(i)
 			return m, m.commitSelection()
 		}
@@ -508,7 +618,7 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Global actions on the selected repo (the OPEN IN bar's promise).
 	if fn, ok := m.repoAction(key); ok {
 		if repo, has := m.selectedRepo(); has {
-			m.reported(fn(repo.Path), key, repo.Path)
+			return m, m.reported(fn(repo.Path), key, repo.Path)
 		}
 		return m, nil
 	}
@@ -532,13 +642,15 @@ func (m Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // envAction maps the ENV pane's keys onto `docker compose`, always shown
 // in a terminal so builds, pulls and logs are watched rather than awaited.
-func (m *Model) envAction(key string) bool {
+// It reports whether the key was one of the compose verbs, with the cmd that
+// expires the status echo it wrote.
+func (m *Model) envAction(key string) (bool, tea.Cmd) {
 	p := m.proj()
 	if p.EnvFile == "" {
-		return false
+		return false, nil
 	}
 	svc := ""
-	if i := m.cursors[paneEnv]; i >= 0 && i < len(m.envSvcs) {
+	if i := m.realIdx(paneEnv); i >= 0 && i < len(m.envSvcs) {
 		svc = m.envSvcs[i].Name
 	}
 	var args []string
@@ -554,8 +666,7 @@ func (m *Model) envAction(key string) bool {
 		args = []string{"down"}
 	case "r":
 		if svc == "" {
-			m.status = "restart: no service selected"
-			return true
+			return true, m.setStatus("restart: no service selected")
 		}
 		args = []string{"restart", svc}
 	case "l":
@@ -565,15 +676,13 @@ func (m *Model) envAction(key string) bool {
 		}
 	case "x":
 		if svc == "" {
-			m.status = "shell: no service selected"
-			return true
+			return true, m.setStatus("shell: no service selected")
 		}
 		args = []string{"exec", svc, "sh"}
 	default:
-		return false
+		return false, nil
 	}
-	m.reported(actions.Compose(p.EnvDir, p.EnvFile, args...), "compose", strings.Join(args, " "))
-	return true
+	return true, m.reported(actions.Compose(p.EnvDir, p.EnvFile, args...), "compose", strings.Join(args, " "))
 }
 
 func (m Model) repoAction(key string) (func(string) error, bool) {
@@ -592,29 +701,32 @@ func (m Model) repoAction(key string) (func(string) error, bool) {
 	return nil, false
 }
 
-func (m Model) moveCursor(dy int) (tea.Model, tea.Cmd) {
-	switch m.focus {
+// setCursorPos parks a pane's cursor on a visible row and refreshes whatever
+// hangs off that row. The pane is an argument, not m.focus, because the mouse
+// wheel scrolls the pane it hovers without stealing focus.
+func (m Model) setCursorPos(p paneFocus, pos int) (tea.Model, tea.Cmd) {
+	n := m.listCount(p)
+	if n == 0 {
+		return m, nil
+	}
+	pos = clamp(pos, 0, n-1)
+	switch p {
 	case paneProjects:
-		m.selectProject(m.project + dy)
+		m.selectProject(pos)
 		return m, m.commitSelection()
 	case paneRepos:
-		n := len(m.proj().Repos)
-		if n == 0 {
-			return m, nil
-		}
-		m.repo = clamp(m.repo+dy, 0, n-1)
+		m.repo = pos
 		return m, m.commitSelection()
-	default:
-		n := m.listCount(m.focus)
-		if n == 0 {
-			return m, nil
-		}
-		m.cursors[m.focus] = clamp(m.cursors[m.focus]+dy, 0, n-1)
-		if m.focus == paneSessions {
-			return m, m.todosCmd()
-		}
+	}
+	m.cursors[p] = pos
+	if p == paneSessions {
+		return m, m.todosCmd()
 	}
 	return m, nil
+}
+
+func (m Model) moveCursor(dy int) (tea.Model, tea.Cmd) {
+	return m.setCursorPos(m.focus, m.selectedIndex(m.focus)+dy)
 }
 
 // onMouse routes clicks and wheels through the same geometry the renderer
@@ -642,53 +754,18 @@ func (m Model) onMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if !ok || !r.contains(msg.X, msg.Y) {
 			continue
 		}
-		if step == -2 {
-			if m.focus != pane {
-				m.focus = pane
-			}
-			inner := r.h - 2
-			if inner < 1 {
-				break
-			}
-			n := m.listCount(pane)
-			if n == 0 {
-				break
-			}
-			start := listStart(n, m.selectedIndex(pane), inner)
-			idx := clamp(start+msg.Y-r.y-1, 0, n-1)
-			switch pane {
-			case paneProjects:
-				m.selectProject(idx)
-				return m, m.commitSelection()
-			case paneRepos:
-				m.repo = idx
-				return m, m.commitSelection()
-			default:
-				m.cursors[pane] = idx
-				if pane == paneSessions {
-					return m, m.todosCmd()
-				}
-			}
-		} else {
-			n := m.listCount(pane)
-			if n == 0 {
-				break
-			}
-			switch pane {
-			case paneProjects:
-				m.selectProject(m.project + step)
-				return m, m.commitSelection()
-			case paneRepos:
-				m.repo = clamp(m.repo+step, 0, n-1)
-				return m, m.commitSelection()
-			default:
-				m.cursors[pane] = clamp(m.selectedIndex(pane)+step, 0, n-1)
-				if pane == paneSessions {
-					return m, m.todosCmd()
-				}
-			}
+		if step != -2 { // wheel: the hovered pane scrolls, its focus stays put
+			return m.setCursorPos(pane, m.selectedIndex(pane)+step)
 		}
-		return m, nil
+		// click: the pane takes focus, and the cursor lands on the row under
+		// the pointer -- measured against the window of rows the pane painted
+		m.focus = pane
+		inner, n := r.h-2, m.listCount(pane)
+		if inner < 1 || n == 0 {
+			return m, nil
+		}
+		start := listStart(n, m.selectedIndex(pane), inner)
+		return m.setCursorPos(pane, start+msg.Y-r.y-1)
 	}
 	return m, nil
 }
@@ -699,7 +776,7 @@ func (m Model) onEnter() (tea.Model, tea.Cmd) {
 		m.focus = paneRepos
 	case paneRepos:
 		if repo, ok := m.selectedRepo(); ok {
-			m.reported(actions.Lazygit(repo.Path), "lazygit", repo.Path)
+			return m, m.reported(actions.Lazygit(repo.Path), "lazygit", repo.Path)
 		}
 	case paneEnv:
 		// inert on purpose: compose verbs need a deliberate letter, and
@@ -715,68 +792,73 @@ func (m Model) onEnter() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) actSession() (tea.Model, tea.Cmd) {
-	list := m.sessionsFor()
-	i := m.cursors[paneSessions]
-	if i < 0 || i >= len(list) {
+	i := m.realIdx(paneSessions)
+	if i < 0 {
 		return m, nil
 	}
-	s := list[i]
-	m.reported(actions.ResumeSession(s.Directory, s.ID), "resume", s.Title)
-	return m, nil
+	s := m.sessionsFor()[i]
+	return m, m.reported(actions.ResumeSession(s.Directory, s.ID), "resume", s.Title)
 }
 
 func (m Model) actNote() (tea.Model, tea.Cmd) {
-	notes := m.proj().Notes
-	i := m.cursors[paneNotes]
-	if i < 0 || i >= len(notes) {
+	i := m.realIdx(paneNotes)
+	if i < 0 {
 		return m, nil
 	}
-	m.reported(actions.OpenFile(notes[i].Path), "open", notes[i].Rel)
-	return m, nil
+	n := m.proj().Notes[i]
+	return m, m.reported(actions.OpenFile(n.Path), "open", n.Rel)
+}
+
+// copied is the text the cursor stands on, whatever pane holds focus -- the
+// row's own identity, resolved through the visible rows so what lands in the
+// clipboard is the row the user is looking at and not the one that happens to
+// share its position.
+func (m Model) copied() string {
+	i := m.realIdx(m.focus)
+	if i < 0 {
+		return ""
+	}
+	switch m.focus {
+	case paneProjects:
+		return m.report.Projects[i].Path
+	case paneRepos:
+		return m.proj().Repos[i].Path
+	case paneEnv:
+		return m.proj().EnvFile
+	case paneCommits:
+		return m.commits[i].Hash
+	case paneSessions:
+		return m.sessionsFor()[i].Directory
+	default: // paneNotes
+		return m.proj().Notes[i].Path
+	}
 }
 
 func (m Model) actCopy() (tea.Model, tea.Cmd) {
-	var what string
-	switch m.focus {
-	case paneProjects:
-		what = m.proj().Path
-	case paneRepos:
-		if repo, ok := m.selectedRepo(); ok {
-			what = repo.Path
-		}
-	case paneEnv:
-		what = m.proj().EnvFile
-	case paneCommits:
-		i := m.cursors[paneCommits]
-		if i >= 0 && i < len(m.commits) {
-			what = m.commits[i].Hash
-		}
-	case paneSessions:
-		list := m.sessionsFor()
-		i := m.cursors[paneSessions]
-		if i >= 0 && i < len(list) {
-			what = list[i].Directory
-		}
-	default: // paneNotes
-		notes := m.proj().Notes
-		i := m.cursors[paneNotes]
-		if i >= 0 && i < len(notes) {
-			what = notes[i].Path
-		}
-	}
+	what := m.copied()
 	if what == "" {
 		return m, nil
 	}
-	m.reported(actions.Copy(what), "copy", what)
-	return m, nil
+	return m, m.reported(actions.Copy(what), "copy", what)
 }
 
-func (m *Model) reported(err error, what, target string) {
+// setStatus shows a transient line and arms its own disappearance: the status
+// line is shared with the session todos and the feed notes, and an echo that
+// lived until the next pane cycle hid both of them.
+func (m *Model) setStatus(text string) tea.Cmd {
+	m.status = text
+	m.statusGen++
+	gen := m.statusGen
+	return tea.Tick(statusTTL, func(time.Time) tea.Msg { return statusExpireMsg{gen: gen} })
+}
+
+// reported turns an action's outcome into a status line and returns the cmd
+// that expires it -- callers must pass it on or the line never goes away.
+func (m *Model) reported(err error, what, target string) tea.Cmd {
 	if err != nil {
-		m.status = fmt.Sprintf("%s failed: %v", what, err)
-		return
+		return m.setStatus(fmt.Sprintf("%s failed: %v", what, err))
 	}
-	m.status = fmt.Sprintf("%s: %s", what, filepath.Base(target))
+	return m.setStatus(fmt.Sprintf("%s: %s", what, filepath.Base(target)))
 }
 
 // -------------------------------------------------------------- feed errors
@@ -1000,8 +1082,9 @@ func (m Model) paneProjects(g geom) string {
 	w, h := g.leftW, g.projH
 	inner := w - 4
 	var lines []string
-	for i, p := range m.report.Projects {
-		label := fmt.Sprintf("%d %s", i+1, clip(p.Name, inner-14))
+	for pos, it := range m.visible(paneProjects) {
+		p := m.report.Projects[it.idx]
+		label := fmt.Sprintf("%d %s", pos+1, clip(p.Name, inner-14))
 		switch {
 		case p.Missing:
 			label = padR(label, inner-9) + red("missing")
@@ -1010,7 +1093,7 @@ func (m Model) paneProjects(g geom) string {
 		default:
 			label = padR(label, inner-3) + green("✓")
 		}
-		lines = append(lines, m.fillRow(paneProjects, "> "+label, i == m.project, inner))
+		lines = append(lines, m.fillRow(paneProjects, "> "+label, pos == m.project, inner))
 	}
 	if len(lines) == 0 {
 		lines = []string{dim("(no projects)")}
@@ -1047,9 +1130,10 @@ func (m Model) paneRepos(g geom) string {
 	inner := w - 4
 	repos := m.proj().Repos
 	var lines []string
-	for i, r := range repos {
+	for pos, it := range m.visible(paneRepos) {
+		r := repos[it.idx]
 		label := padR(clip(filepath.Base(r.Path), inner-14), inner-14) + repoState(r)
-		lines = append(lines, m.fillRow(paneRepos, "> "+label, i == m.repo, inner))
+		lines = append(lines, m.fillRow(paneRepos, "> "+label, pos == m.repo, inner))
 	}
 	if len(lines) == 0 {
 		lines = []string{dim("(no repositories)")}
@@ -1168,7 +1252,8 @@ func (m Model) paneEnv(g geom) string {
 	case len(m.envSvcs) == 0:
 		lines = []string{dim("(no containers — compose down?)")}
 	default:
-		for i, s := range m.envSvcs {
+		for pos, it := range m.visible(paneEnv) {
+			s := m.envSvcs[it.idx]
 			state := orange(s.State)
 			switch s.State {
 			case "running":
@@ -1184,7 +1269,7 @@ func (m Model) paneEnv(g geom) string {
 			}
 			nameW := max(1, min(inner-16, 24))
 			line := padR(clip(s.Name, nameW), nameW) + state
-			lines = append(lines, m.fillRow(paneEnv, "> "+line, i == m.cursors[paneEnv], inner))
+			lines = append(lines, m.fillRow(paneEnv, "> "+line, pos == m.cursors[paneEnv], inner))
 		}
 	}
 	return pane(m.focus == paneEnv, clip(title, w-6), w, h,
@@ -1205,12 +1290,13 @@ func (m Model) paneCommits(g geom) string {
 		lines = []string{m.spinner.View() + dim(" loading…")}
 	default:
 		title = clip(fmt.Sprintf("COMMITS · %s · %d", repo.Branch, len(m.commits)), inner)
-		for i, c := range m.commits {
+		for pos, it := range m.visible(paneCommits) {
+			c := m.commits[it.idx]
 			// hash | subject | author | age: fixed visible columns
 			line := accent(clip(c.Hash, 9)) + " " +
 				padR(clip(c.Subject, inner-36), inner-36) +
 				dim(padL(clip(c.Author, 14), 15)+padL(shortAge(c.When), 5))
-			lines = append(lines, m.fillRow(paneCommits, "> "+line, i == m.cursors[paneCommits], inner))
+			lines = append(lines, m.fillRow(paneCommits, "> "+line, pos == m.cursors[paneCommits], inner))
 		}
 		if len(lines) == 0 {
 			lines = []string{dim("(no commits)")}
@@ -1247,10 +1333,11 @@ func (m Model) paneSessions(g geom) string {
 	}
 	title := clip(fmt.Sprintf("SESSIONS · %s · %d", scope, len(list))+m.warn(paneSessions), inner)
 	var lines []string
-	for i, s := range list {
+	for pos, it := range m.visible(paneSessions) {
+		s := list[it.idx]
 		meta := dim(padL(shortAge(s.Updated), 5) + " " + padL(fmt.Sprintf("$%.2f", s.Cost), 6))
 		line := padR(clip(s.Title, inner-lipgloss.Width(meta)-2), inner-lipgloss.Width(meta)-2) + meta
-		lines = append(lines, m.fillRow(paneSessions, "> "+line, i == m.cursors[paneSessions], inner))
+		lines = append(lines, m.fillRow(paneSessions, "> "+line, pos == m.cursors[paneSessions], inner))
 	}
 	if len(lines) == 0 {
 		lines = []string{m.emptyNote(paneSessions, "(no sessions)", inner)}
@@ -1265,10 +1352,11 @@ func (m Model) paneNotes(g geom) string {
 	notes := m.proj().Notes
 	title := clip(fmt.Sprintf("NOTES · %d", len(notes))+m.warn(paneNotes), inner)
 	var lines []string
-	for i, n := range notes {
+	for pos, it := range m.visible(paneNotes) {
+		n := notes[it.idx]
 		meta := dim(padL(shortAge(n.Modified), 5))
 		line := padR(clip(n.Rel, inner-lipgloss.Width(meta)-2), inner-lipgloss.Width(meta)-2) + meta
-		lines = append(lines, m.fillRow(paneNotes, "> "+line, i == m.cursors[paneNotes], inner))
+		lines = append(lines, m.fillRow(paneNotes, "> "+line, pos == m.cursors[paneNotes], inner))
 	}
 	if len(lines) == 0 {
 		lines = []string{m.emptyNote(paneNotes, "(no notes)", inner)}

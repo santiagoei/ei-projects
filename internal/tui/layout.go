@@ -51,7 +51,7 @@ func (m Model) geom() geom {
 	avail := g.bodyH - g.actionH
 	envWant := 0
 	if p := m.proj(); p.EnvFile != "" {
-		rows := len(m.envSvcs)
+		rows := m.listCount(paneEnv)
 		if m.envLoading || m.envErr != "" {
 			rows = 1
 		}

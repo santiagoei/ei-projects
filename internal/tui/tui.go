@@ -68,6 +68,12 @@ type scanDoneMsg struct {
 	err    error
 }
 
+// remoteDoneMsg carries its repository for the same race guard as the history.
+type remoteDoneMsg struct {
+	repoPath string
+	url      string
+}
+
 // commitsDoneMsg carries the repo it belongs to: a reply for a repo the
 // user has already walked past is dropped, never rendered.
 type commitsDoneMsg struct {
@@ -119,6 +125,8 @@ type Model struct {
 	envFetched     bool
 	envLoading     bool
 	envErr         string
+	remote         string // where the selected repository pushes, for the detail block
+	remoteFor      string
 	spinner        spinner.Model
 	help           bool
 	restored       bool
@@ -541,6 +549,8 @@ func (m *Model) selectProject(idx int) {
 	m.cursors = map[paneFocus]int{}
 	m.commits = nil
 	m.commitsFor = ""
+	m.remote = ""
+	m.remoteFor = ""
 }
 
 // clampCursors parks every cursor inside the rows its pane actually shows --
@@ -606,7 +616,32 @@ func (m *Model) selectByPath(projectPath, repoPath string) {
 // the selected session's todos, the compose state.
 func (m *Model) commitSelection() tea.Cmd {
 	m.persist()
-	return tea.Batch(m.commitsCmd(), m.todosCmd(), m.envCmd())
+	return tea.Batch(m.commitsCmd(), m.todosCmd(), m.envCmd(), m.remoteCmd())
+}
+
+// remoteCmd fetches the push target of the selected repository -- on demand,
+// like the history: one subprocess for the repository being looked at, never
+// one per repository per scan.
+func (m *Model) remoteCmd() tea.Cmd {
+	repo, ok := m.selectedRepo()
+	if !ok {
+		m.remote, m.remoteFor = "", ""
+		return nil
+	}
+	if m.remoteFor == repo.Path {
+		return nil // cached, or a request already in flight
+	}
+	path := repo.Path
+	m.remote, m.remoteFor = "", path
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), commitDeadline)
+		defer cancel()
+		url, err := gitx.Remote(ctx, path)
+		if err != nil {
+			return remoteDoneMsg{repoPath: path}
+		}
+		return remoteDoneMsg{repoPath: path, url: url}
+	}
 }
 
 // afterSelection is what a report swap owes the cursors. The order is the
@@ -646,6 +681,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, m.afterSelection()
+
+	case remoteDoneMsg:
+		if repo, ok := m.selectedRepo(); ok && repo.Path == msg.repoPath {
+			m.remote, m.remoteFor = msg.url, msg.repoPath
+		}
+		return m, nil
 
 	case commitsDoneMsg:
 		m.commitsLoading = false
@@ -1383,8 +1424,12 @@ func (m Model) View() string {
 	}
 	right = append(right, commits, sessions, notes)
 
-	left := lipgloss.JoinVertical(lipgloss.Left, projects, repos)
-	frame := lipgloss.JoinHorizontal(lipgloss.Top, left,
+	left := []string{projects, repos}
+	if detail := m.paneDetail(g); detail != "" {
+		left = append(left, detail)
+	}
+	frame := lipgloss.JoinHorizontal(lipgloss.Top,
+		lipgloss.JoinVertical(lipgloss.Left, left...),
 		lipgloss.JoinVertical(lipgloss.Left, right...))
 
 	// breadcrumb on top, frame, then the two lines that read the frame: the
@@ -1447,18 +1492,24 @@ func (m Model) legend() string {
 	// and says so with an ellipsis -- blindly keeping five keys used to be
 	// sixty-four columns in a sixty-column window.
 	sep, ell := dim(" · "), dim("…")
-	glue := lipgloss.Width(sep)
+	glue := lipgloss.Width(sep) // the separator is paid for by the key that follows
 	kept, used := []string{}, 0
 	for _, part := range parts {
 		w := lipgloss.Width(part) + glue
 		if used+w > m.width {
-			if m.width-used-glue >= lipgloss.Width(ell) {
+			// reserve the separator the ellipsis would ride on: an un-fitting
+			// ellipsis is worse than a silently dropped key
+			if m.width-used >= glue+lipgloss.Width(ell) {
 				kept = append(kept, sep+ell)
 			}
 			break
 		}
-		kept = append(kept, sep+part)
-		used += w
+		if len(kept) > 0 { // the bar does not open with its own separator
+			kept = append(kept, sep)
+			used += glue
+		}
+		kept = append(kept, part)
+		used += lipgloss.Width(part)
 	}
 	if len(kept) == 0 { // not even one key fits: the hint beats an empty row
 		return ell
@@ -1478,6 +1529,13 @@ func pane(active bool, title string, w, h int, body string) string {
 	fg, corner := p.faint, "╭─ "
 	if active {
 		fg, corner = p.accent, "╭▶ "
+	}
+	// the box does not wrap and does not scroll: text longer than the frame
+	// grows the box, and a frame one row taller than the window makes the
+	// terminal eat the top border. Anything past the rows this pane owns gets
+	// cut, with the sequences of the last kept line left balanced.
+	if max := h - 2; max >= 0 {
+		body = fitRows(body, max)
 	}
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -1601,11 +1659,85 @@ func suffixLen(n int) int {
 // same grey is everything shouting, and "what did I touch today" should be
 // answerable by contrast before it is answerable by reading a number.
 func ageCell(t time.Time, staleAfter time.Duration) string {
+	if t.IsZero() { // no date is not "a very long time ago"
+		return dim("     ")
+	}
 	s := padL(shortAge(t), 5)
 	if !t.IsZero() && time.Since(t) > staleAfter {
 		return dim(s)
 	}
 	return lipgloss.NewStyle().Foreground(pal().fg).Render(s)
+}
+
+// detailLines is what the repository under the cursor is worth showing that
+// no pane lists: where it lives, what it pushes to, its last commit, the vault
+// folder and the compose file that belong to it. The list is the pane's height
+// budget, so the layout asks the same function the renderer answers with.
+//
+// It is a display, not a focus: nothing to select, no cursor, no keys, and the
+// tab order does not grow. A pane the user can stop in but not act on is a
+// pane that steals keystrokes from the one they meant.
+func (m Model) detailLines(inner int) []string {
+	repo, ok := m.selectedRepo()
+	if !ok {
+		return nil
+	}
+	label := func(s string) string { return dim(s) }
+	rows := []string{
+		// the branch first: it is what the path does not say, and the row
+		// under it is the push target that branch is standing on
+		label("on   ") + clip(repo.Branch, inner-5),
+		label("path ") + clip(shortPath(repo.Path), inner-5),
+	}
+	switch {
+	case repo.Upstream != "":
+		rows = append(rows, label("push ")+clip(repo.Upstream, inner-5))
+	case repo.Error == "":
+		rows = append(rows, label("push ")+dim("(no upstream)"))
+	}
+	if repo.Error == "" && m.remoteFor == repo.Path {
+		if m.remote != "" {
+			rows = append(rows, label("from ")+clip(m.remote, inner-5))
+		} else {
+			rows = append(rows, label("from ")+dim("(no origin)"))
+		}
+	}
+	if len(m.commits) > 0 {
+		c := m.commits[0]
+		hash := accent(clip(c.Hash, 9))
+		free := max(4, inner-lipgloss.Width(hash)-12)
+		rows = append(rows, label("last ")+hash+" "+
+			padR(clip(c.Subject, free), free)+ageCell(c.When, 30*24*time.Hour))
+	}
+	p := m.proj()
+	if p.DocsFolder != "" {
+		docs := p.DocsFolder
+		if rel, err := filepath.Rel(m.cfg.VaultDir, docs); err == nil {
+			if rel == "." { // the project IS the vault: there is no folder to name
+				docs = ""
+			} else if !strings.HasPrefix(rel, "..") {
+				docs = rel
+			}
+		}
+		if docs != "" {
+			rows = append(rows, label("docs ")+clip(shortPath(docs), inner-5))
+		}
+	}
+	if p.EnvFile != "" {
+		rows = append(rows, label("env  ")+clip(shortPath(p.EnvFile), inner-5))
+	}
+	return rows
+}
+
+func (m Model) paneDetail(g geom) string {
+	rows := m.detailLines(g.leftW - 4)
+	if g.detailH < listFloor || len(rows) == 0 {
+		return ""
+	}
+	// lipgloss pads a short box and lets a long one grow: the rows that do not
+	// fit are dropped, because a detail block taller than its frame pushes the
+	// bottom border -- and the row under it -- off the screen.
+	return pane(false, "DETAIL", g.leftW, g.detailH, strings.Join(rows, "\n"))
 }
 
 // repoState is the coloured status suffix for one repository. The widest
@@ -2202,6 +2334,20 @@ func shortAge(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
+}
+
+// fitRows cuts a box's body to the rows it owns. Dropping whole lines is the
+// only safe cut here: slicing inside a line would stop in the middle of an
+// escape sequence, and half a sequence paints garbage down the row.
+func fitRows(body string, rows int) string {
+	if rows < 0 {
+		rows = 0
+	}
+	lines := strings.Split(body, "\n")
+	if len(lines) <= rows {
+		return strings.Join(lines, "\n")
+	}
+	return strings.Join(lines[:rows], "\n")
 }
 
 // cut is clip for text that may already be styled: a pane title carries an

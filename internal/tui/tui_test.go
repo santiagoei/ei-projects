@@ -974,6 +974,9 @@ func TestLegendNeverWraps(t *testing.T) {
 			m = drive(t, m, scanDoneMsg{report: testReport()})
 			m.focus = f
 			l := m.legend()
+			if strings.HasPrefix(l, dim(" · ")) || strings.HasPrefix(l, " · ") {
+				t.Fatalf("%d wide: the bar opens with its separator: %q", w, l)
+			}
 			if strings.Contains(l, "\n") {
 				t.Fatalf("%d wide, pane %d: the bar wrapped: %q", w, f, l)
 			}
@@ -1090,6 +1093,69 @@ func TestProjectRowsAndActiveBorder(t *testing.T) {
 		}
 		if !strings.Contains(wm.paneProjects(wm.geom()), "+") {
 			t.Fatal("forty repositories and no remainder marker")
+		}
+	}
+}
+
+// The dead space under a short repository list becomes a block about the
+// repository the user is actually standing on: where it lives, what it pushes
+// to, its last commit, the vault folder and the compose file belonging to it.
+// It is a display, not a stop: the tab order does not grow, because a pane the
+// user cannot act on should not steal the keys.
+func TestDetailBlockUsesTheSpareRows(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	rep := testReport()
+	rep.Projects[1].DocsFolder = "/v/50 area.tr/tr.fei"
+	rep.Projects[1].EnvFile = "/p/icampus.fei.org/docker-compose.yml"
+
+	m := New(&config.Config{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: rep})
+	m.selectProject(1)
+	m.repo = 2 // moodle405
+	m = drive(t, m, commitsDoneMsg{repoPath: "/p/moodle405",
+		commits: []gitx.Commit{{Hash: "97d5fe3", Subject: "Move files"}}})
+	m = drive(t, m, remoteDoneMsg{repoPath: "/p/moodle405", url: "git@github.com:fei/moodle405.git"})
+
+	g := m.geom()
+	if g.detailH < listFloor {
+		t.Fatalf("a 40-row window has no detail block: %d", g.detailH)
+	}
+	body := m.paneDetail(g)
+	for _, want := range []string{"path ", "/p/moodle405", "97d5fe3", "Move files",
+		"github.com:fei/moodle405.git", "tr.fei", "docker-compose.yml"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the detail block lost %q:\n%s", want, body)
+		}
+	}
+	// it costs the frame nothing: projects and repositories keep their floors
+	if g.projH < listFloor || g.repoH < listFloor {
+		t.Fatalf("the left column starved: proj=%d repos=%d detail=%d", g.projH, g.repoH, g.detailH)
+	}
+	if g.projH+g.repoH+g.detailH != g.bodyH {
+		t.Fatalf("the left column does not add up: %d+%d+%d != %d", g.projH, g.repoH, g.detailH, g.bodyH)
+	}
+	// no repository, no block
+	m2 := drive(t, New(&config.Config{}), tea.WindowSizeMsg{Width: 150, Height: 40})
+	m2 = drive(t, m2, scanDoneMsg{report: scan.Report{Projects: []scan.Project{{Name: "bare", Path: "/b"}}}})
+	if m2.geom().detailH != 0 || m2.paneDetail(m2.geom()) != "" {
+		t.Fatal("a project with no repositories painted a detail block")
+	}
+	// a short window drops it rather than starving the lists, and the view
+	// never overflows at any size
+	for _, size := range []struct{ w, h int }{{60, 22}, {80, 24}, {100, 30}, {150, 40}, {200, 60}} {
+		sm := drive(t, New(&config.Config{}), tea.WindowSizeMsg{Width: size.w, Height: size.h})
+		sm = drive(t, sm, scanDoneMsg{report: rep})
+		sm.selectProject(1)
+		sm = drive(t, sm, remoteDoneMsg{repoPath: m.proj().Repos[2].Path, url: "git@github.com:fei/moodle405.git"})
+		view := sm.View()
+		if n := strings.Count(view, "\n") + 1; n > size.h-1 {
+			t.Fatalf("%dx%d: %d lines\n%s", size.w, size.h, n, view)
+		}
+		for _, line := range strings.Split(view, "\n") {
+			if got := lipgloss.Width(line); got > size.w {
+				t.Fatalf("%dx%d: a row is %d wide: %q", size.w, size.h, got, line)
+			}
 		}
 	}
 }

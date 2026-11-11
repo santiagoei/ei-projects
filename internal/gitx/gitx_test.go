@@ -294,3 +294,33 @@ func TestScanKeepsOrderAndParallelism(t *testing.T) {
 		}
 	}
 }
+
+// The detail block reads the push target of the repository under the cursor.
+// A repo without an origin is not an error; a repo that cannot be read is.
+func TestRemote(t *testing.T) {
+	tmp := t.TempDir()
+	repo := filepath.Join(tmp, "work")
+	newRepo(t, repo)
+	if got, err := Remote(context.Background(), repo); got != "" || err != nil {
+		t.Fatalf("no origin should be empty and quiet: %q %v", got, err)
+	}
+
+	remote := filepath.Join(tmp, "remote.git")
+	if err := os.MkdirAll(remote, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, tmp, "init", "-q", "--bare", remote)
+	git(t, repo, "remote", "add", "origin", remote)
+	git(t, repo, "push", "-q", "-u", "origin", "main")
+	got, err := Remote(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != remote {
+		t.Fatalf("origin url: %q, want %q", got, remote)
+	}
+
+	if got, err := Remote(context.Background(), filepath.Join(tmp, "plain")); err == nil {
+		t.Fatalf("a directory that is not a repo must report something: %q", got)
+	}
+}

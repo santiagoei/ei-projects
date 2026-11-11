@@ -27,14 +27,17 @@ func (g geom) innerH(p paneFocus) int {
 type geom struct {
 	leftW, rightW, bodyH int
 	projH, repoH         int
-	oiBody               string // wrapped launcher line(s)
-	actionH              int
-	hasEnv               bool
-	envH                 int
-	commitsH             int
-	sessionsH            int
-	notesH               int
-	rects                map[paneFocus]rect
+	// detailH is the read-only block under the repositories, when the window
+	// has rows for a third left column pane
+	detailH   int
+	oiBody    string // wrapped launcher line(s)
+	actionH   int
+	hasEnv    bool
+	envH      int
+	commitsH  int
+	sessionsH int
+	notesH    int
+	rects     map[paneFocus]rect
 }
 
 const (
@@ -51,8 +54,20 @@ func (m Model) geom() geom {
 	// top border
 	g.bodyH = m.height - 4
 
-	g.projH = clamp(m.height*42/100, 7, g.bodyH-7)
-	g.repoH = g.bodyH - g.projH
+	// The left column is projects, repositories, and -- when the window can
+	// afford a third box without taking the floors away from the other two --
+	// the detail block. It pays for itself out of the repositories' slack:
+	// a list of five needs six rows and the projects pane has rarely more.
+	detailWant := len(m.detailLines(g.leftW-4)) + 2
+	if detailWant >= listFloor && g.bodyH >= detailWant+2*listFloor {
+		g.projH = clamp(m.height*42/100, listFloor, g.bodyH-detailWant-listFloor)
+		g.detailH = detailWant
+		g.repoH = g.bodyH - g.projH - g.detailH
+	} else {
+		g.detailH = 0
+		g.projH = clamp(m.height*42/100, 7, g.bodyH-7)
+		g.repoH = g.bodyH - g.projH
+	}
 
 	var oiRows int
 	g.oiBody, oiRows = openInBody(g.rightW - 4)

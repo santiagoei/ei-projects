@@ -346,6 +346,24 @@ func counts(ctx context.Context, dir string) (behind, ahead int, err error) {
 	return b, a, nil
 }
 
+// Remote is the URL the repository pushes to, "" when it has no origin. It is
+// read on demand for the repository under the cursor -- one subprocess for the
+// whole list would be thirty of them, and the detail block only ever shows
+// one.
+func Remote(ctx context.Context, dir string) (string, error) {
+	out, err := run(ctx, dir, "remote", "get-url", "origin")
+	if err != nil {
+		// "no such remote 'origin'" is a fact about the repository, not a
+		// failure to report; a real problem (an unreadable repo) is. Git's
+		// advice block rides in the same stderr, so the caller gets the
+		// message it can put in a status line.
+		if !strings.Contains(strings.ToLower(err.Error()), "no such remote") {
+			return "", err
+		}
+	}
+	return out, nil
+}
+
 // Commit is one line of history, as the cockpit's COMMITS tab shows it.
 type Commit struct {
 	Hash    string    `json:"hash"`

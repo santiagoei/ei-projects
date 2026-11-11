@@ -14,7 +14,12 @@ with a docker environment): projects (top-left), the selected project's
 repositories (bottom-left), a one-line **OPEN IN** launcher bar
 for the selected repo (top-right), and beneath it three stacked list
 panes: the repo's **commits**, its **opencode sessions**, and the
-project's freshest **vault notes**. The frame lives in `## Layout` below.
+project's freshest **vault notes**. Under the repositories, when the window
+has the rows, a read-only **DETAIL** block says what the selected repo is:
+its branch, path, push target and origin, last commit, docs folder and
+compose file — a display, not a stop: the tab order does not grow, because a
+pane the user cannot act on should not steal the keys. The frame lives in
+`## Layout` below.
 
 ## What it reads
 

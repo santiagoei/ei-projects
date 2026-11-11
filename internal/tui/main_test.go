@@ -5,6 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/santiagoei/ei-projects/internal/actions"
+	"github.com/santiagoei/ei-projects/internal/herdr"
 )
 
 // TestMain keeps the package's tests off the developer's machine, and off each
@@ -38,6 +41,10 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "test home:", err)
 		os.Exit(1)
 	}
+	// herdr is never asked for real: a machine running it must not change what
+	// the suite sees, and a jump must never raise a window on the desktop
+	herdr.Bin = filepath.Join(dir, "no-herdr")
+	actions.RaiseHerdr = func() bool { return false }
 	os.Setenv("XDG_STATE_HOME", dir)
 	os.Setenv("EI_PROJECTS_OPENCODE_DB", filepath.Join(dir, "absent.db"))
 

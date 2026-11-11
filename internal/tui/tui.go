@@ -28,6 +28,7 @@ import (
 	"github.com/santiagoei/ei-projects/internal/config"
 	"github.com/santiagoei/ei-projects/internal/env"
 	"github.com/santiagoei/ei-projects/internal/gitx"
+	"github.com/santiagoei/ei-projects/internal/herdr"
 	"github.com/santiagoei/ei-projects/internal/scan"
 )
 
@@ -147,6 +148,11 @@ type Model struct {
 	// for the same keystroke twice.
 	pushArmed bool
 
+	// live is the agent panes herdr reports, refreshed on its own short tick.
+	// liveErr says herdr is installed but did not answer.
+	live    []herdr.Pane
+	liveErr bool
+
 	width  int
 	height int
 	status string
@@ -172,7 +178,7 @@ func New(cfg *config.Config) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.scanCmd(), m.spinner.Tick, envTick(), refreshTick(m.refreshEvery()))
+	return tea.Batch(m.scanCmd(), m.spinner.Tick, envTick(), refreshTick(m.refreshEvery()), m.liveCmd(), liveTick())
 }
 
 func (m Model) scanCmd() tea.Cmd {
@@ -814,6 +820,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cursors[paneEnv] = m.cursorFor(paneEnv)
 		return m, m.tickIfBusy()
 
+	case liveDoneMsg:
+		if msg.err != nil {
+			m.live, m.liveErr = nil, true
+			return m, nil
+		}
+		m.live, m.liveErr = msg.panes, false
+		return m, nil
+
+	case liveTickMsg:
+		return m, tea.Batch(liveTick(), m.liveCmd())
+
 	case refreshTickMsg:
 		// never two scans at once; the next tick is armed whether this one
 		// could run or not, so a busy cockpit does not stop refreshing
@@ -1300,6 +1317,11 @@ func (m Model) onEnter() (tea.Model, tea.Cmd) {
 	case paneCommits:
 		return m.actCopy()
 	case paneSessions:
+		if i := m.realIdx(paneSessions); i >= 0 {
+			if p, ok := m.liveFor(m.sessionsFor()[i].Directory); ok {
+				return m.jumpToAgent(p) // the session is running: go to it, do not restart it
+			}
+		}
 		return m.actSession()
 	default: // paneNotes
 		return m.actNote()
@@ -1478,6 +1500,9 @@ func (m Model) breadcrumb() string {
 	}
 	if n := len(p.Notes); n > 0 {
 		tail += dim(" · " + plural(n, "note"))
+	}
+	if n := m.blockedAgents(); n > 0 {
+		tail += red(fmt.Sprintf(" · ⚠%d blocked", n)) // a question is waiting somewhere
 	}
 	right := ""
 	if !m.scannedAt.IsZero() {
@@ -1914,7 +1939,7 @@ func (m Model) detailLines(inner int) []string {
 	if p.EnvFile != "" {
 		rows = append(rows, label("env  ")+clip(shortPath(p.EnvFile), inner-5))
 	}
-	return rows
+	return append(rows, m.liveLines(repo.Path, inner)...)
 }
 
 func (m Model) paneDetail(g geom) string {
@@ -2182,8 +2207,11 @@ func (m Model) paneSessions(g geom) string {
 		// the reason to open it, and it has to be readable before the cursor
 		// lands, not after
 		badge := ""
+		if p, ok := m.liveFor(s.Directory); ok {
+			badge = " " + liveMark(p.Status) // an agent is running in this session
+		}
 		if s.OpenTodos > 0 {
-			badge = orange(fmt.Sprintf(" ▸%d", s.OpenTodos))
+			badge += orange(fmt.Sprintf(" ▸%d", s.OpenTodos))
 		}
 		from := ""
 		if m.scope == scopeAll && s.Project != "" {
@@ -2265,7 +2293,7 @@ func (m Model) helpView() string {
 			{"P P", "push, twice: it leaves the machine — in a terminal"},
 		}},
 		{"context panes", []helpPair{
-			{"s", "resume session"}, {"d", "open note"}, {"enter", "commits: sha · sessions: resume · notes: open"},
+			{"s", "resume session"}, {"d", "open note"}, {"enter", "commits: sha · sessions: resume, or jump to its live agent · notes: open"},
 			{"S", "sessions scope: repo · project · all projects"},
 		}},
 		{"env · docker compose", []helpPair{

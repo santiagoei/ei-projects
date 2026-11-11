@@ -129,6 +129,27 @@ under the XDG state dir — project and repo by path (not index: the watched
 list grows), the focused pane and each pane's row — so `SUPER+M` reopens
 exactly where you left off, and clamps whatever no longer fits.
 
+## herdr agents
+
+If [herdr](https://github.com/herdrdev/herdr) is installed and its server is
+running, the cockpit reads the agent panes it holds — one read-only
+`herdr api snapshot` every 15 seconds, silent like every other tick. Without
+the binary there is no feed at all, and nothing is asked. Nothing is written
+to a pane: herdr is read, never driven.
+
+- **SESSIONS**: a session whose folder an agent is working in carries `◉`,
+  coloured by its state (red blocked, cyan working, green done, dim idle).
+  `enter` on that session jumps to the agent — `agent focus` in herdr, and the
+  terminal showing herdr is raised when it is on screen — instead of resuming
+  a second copy of it.
+- **DETAIL**: the selected repository's agents, as a count by state and the
+  two most urgent, with their titles.
+- **breadcrumb**: `⚠N blocked` while any agent waits on a question, from any
+  pane, in any project.
+
+A jump moves herdr's focus and the window; it touches nothing on disk or in
+git. If herdr is installed but does not answer, DETAIL says so once.
+
 ## Keys
 
 Repo launchers (top-right **OPEN IN** pane, same as the bar panel's row menu):
@@ -150,7 +171,7 @@ Navigation (the footer bar):
 | `↑/↓` `j/k` | move within the focused pane                      |
 | `pgup/pgdn` `home/end` `ctrl+u/d` | page, jump to first/last, half page — by the rows the pane paints, not the window's |
 | `/` | filter the focused pane · `tab` gives the word to the next pane · `enter` keeps it and hands the keys back · `esc` clears it |
-| `enter`     | projects: to repos · repos: lazygit · commits: copy sha · sessions: resume · notes: open |
+| `enter`     | projects: to repos · repos: lazygit · commits: copy sha · sessions: resume, or jump to its live agent · notes: open |
 | `s` / `d`   | resume the marked session / open the marked note  |
 | `f` `F` `P` | git on the selected repo: fetch, pull `--ff-only`, push (`P` twice — it leaves the machine, and it runs in a terminal) |
 | `S`         | the sessions pane: this repo · this project · everywhere |

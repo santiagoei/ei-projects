@@ -10,6 +10,7 @@ package hypr
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -61,4 +62,47 @@ func readCwd(pid int) (string, bool) {
 		return "", false // a directory that could be any project is none
 	}
 	return dir, true
+}
+
+// RaiseOwner focuses the Hyprland window that owns pid: the first ancestor of
+// pid that is a window's process. A terminal running herdr's client is such a
+// window, and the client itself is only a child of it. False when nothing that
+// owns pid is on screen, or Hyprland cannot be asked.
+func RaiseOwner(pid int, parent func(int) (int, bool)) bool {
+	out, err := exec.Command(hyprctl, "-j", "clients").Output()
+	if err != nil {
+		return false
+	}
+	var clients []struct {
+		PID int `json:"pid"`
+	}
+	if json.Unmarshal(out, &clients) != nil {
+		return false
+	}
+	windows := map[int]bool{}
+	for _, c := range clients {
+		windows[c.PID] = true
+	}
+	owner, ok := owner(pid, windows, parent)
+	if !ok {
+		return false
+	}
+	return exec.Command(hyprctl, "dispatch",
+		fmt.Sprintf(`hl.dsp.focus({ window = "pid:%d" })`, owner)).Run() == nil
+}
+
+// owner walks up from pid until it meets a window's process. The walk is
+// bounded: a process table with a cycle in it must not hang the cockpit.
+func owner(pid int, windows map[int]bool, parent func(int) (int, bool)) (int, bool) {
+	for range 64 {
+		if windows[pid] {
+			return pid, true
+		}
+		next, ok := parent(pid)
+		if !ok || next <= 1 {
+			return 0, false
+		}
+		pid = next
+	}
+	return 0, false
 }

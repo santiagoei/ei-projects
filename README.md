@@ -283,7 +283,7 @@ every `.desktop` application starts) means no answer, and the launchers fall
 back to the saved seat. The cockpit takes the same flag: `ei-projects --here`
 opens on that project and repository instead of where it closed. A watched
 folder that is nested inside another is resolved to the deepest match, so
-watching both `~/Projects` and `~/Projects/obsidian` cannot answer twice.```
+watching both `~/Projects` and `~/Projects/obsidian` cannot answer twice.
 
 They read the same config, the same watched folders and the same saved seat
 as the cockpit, so `SUPER+M` and a bare `ei-projects code` agree on what

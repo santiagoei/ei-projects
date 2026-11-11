@@ -23,7 +23,7 @@ project's freshest **vault notes**. The frame lives in `## Layout` below.
 | Projects | the `watchDirs` of the `ei.git-status` widget in `~/.config/omarchy/shell.json` | a read of your existing config |
 | Repos    | one `git status --porcelain=v2 --branch` per repo — branch, upstream, ahead/behind and the working tree in a single call, parallel, same guards as the panel's scanner (`--no-optional-locks`, fsmonitor off); a git older than 2.22 falls back to the three-call route | one subprocess per repo, used to be four |
 | Sessions | `~/.local/share/opencode/opencode.db` via `sqlite3 -json` — read-only first, a plain connection on a refused or mysteriously-empty read (the live db carries a WAL that can reject read-only mid-checkpoint); prefers `session_v2`, falls back to `session`, guards required columns | one subprocess |
-| Todos    | the same db's `todo` table, for the session under the cursor: its open items (`pending`/`in_progress`) appear in the status line | one subprocess per selection |
+| Todos    | the same db's `todo` table: the count of open items per session arrives with the list (one query for the whole report) and badges each row; the items themselves are read for the session under the cursor and shown in the status line | one subprocess per scan, one per selection |
 | Envs     | a `docker-compose.yml`/`compose.yaml` auto-detected at the project root (or any repo root); state via `docker compose ps --format json` | four stats + one subprocess |
 | Notes    | the vault on disk, `.md` files by mtime, matched per project by name tokens or `docsMap` | a walk |
 
@@ -60,7 +60,9 @@ like "there are only 3".
 Six focusable panes — projects, repos, the conditional **ENV** (shown
 only while the selected project has a docker environment), commits,
 sessions, notes — tab, or a click, walks them, titles sitting on the
-border, lazygit-style. A cursor is always a *row*, never an index: the
+border, lazygit-style. A session that left work behind carries `▸N` on its
+row, so choosing *which* one to resume does not need the cursor parked on
+each one first. A cursor is always a *row*, never an index: the
 item it stands for is resolved through the rows that are on screen, which
 is what lets a filter narrow a pane without moving the selection or
 letting a keystroke act on the wrong repository.

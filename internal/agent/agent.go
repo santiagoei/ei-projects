@@ -31,6 +31,9 @@ type Session struct {
 	Directory string    `json:"directory"`
 	Updated   time.Time `json:"updated"`
 	Cost      float64   `json:"cost"`
+	// OpenTodos is how many items the session left unfinished. The scan
+	// fills it for every session of the report with one query.
+	OpenTodos int `json:"openTodos,omitempty"`
 }
 
 // dbPath is opencode's data dir under XDG data home, env-overridable for tests.
@@ -223,6 +226,52 @@ func columns(db, table string) (map[string]bool, error) {
 		have[r.Name] = true
 	}
 	return have, nil
+}
+
+// OpenCounts is how many items each of these sessions left unfinished, in
+// one query for all of them: the badge on a session row is what tells the
+// user WHICH one to resume, and reading them one session at a time would
+// make the answer cost one subprocess each.
+//
+// A missing todo table (no session has ever made a list) is the same answer
+// as an empty one, not an error: this is decoration, and decoration never
+// breaks the cockpit.
+func OpenCounts(sessionIDs []string) map[string]int {
+	if len(sessionIDs) == 0 {
+		return nil
+	}
+	db, err := available()
+	if err != nil {
+		return nil
+	}
+	have, err := columns(db, "todo")
+	if err != nil || !have["session_id"] || !have["content"] || !have["status"] {
+		return nil
+	}
+	quoted := make([]string, 0, len(sessionIDs))
+	for _, id := range sessionIDs {
+		quoted = append(quoted, "'"+strings.ReplaceAll(id, "'", "''")+"'")
+	}
+	q := fmt.Sprintf(
+		"SELECT session_id, COUNT(*) AS n FROM todo "+
+			"WHERE status IN ('pending','in_progress') AND session_id IN (%s) "+
+			"GROUP BY session_id;", strings.Join(quoted, ","))
+	out, err := queryJSON(db, q)
+	if err != nil || strings.TrimSpace(string(out)) == "" {
+		return nil
+	}
+	var rows []struct {
+		SessionID string `json:"session_id"`
+		N         int    `json:"n"`
+	}
+	if err := json.Unmarshal(out, &rows); err != nil {
+		return nil
+	}
+	counts := make(map[string]int, len(rows))
+	for _, r := range rows {
+		counts[r.SessionID] = r.N
+	}
+	return counts
 }
 
 // Todo is one work item an opencode session left behind.

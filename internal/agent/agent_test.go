@@ -204,3 +204,66 @@ func TestOpenTodos(t *testing.T) {
 		t.Fatalf("missing todo table must degrade quietly: %+v %v", got, err)
 	}
 }
+
+// The badge on a session row costs ONE query for the whole report, so the
+// counting has to be able to say "how many" about many sessions at once.
+func TestOpenCounts(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("no sqlite3")
+	}
+	db := filepath.Join(t.TempDir(), "opencode.db")
+	stmt := "CREATE TABLE todo(session_id TEXT, content TEXT, status TEXT, priority TEXT, position INTEGER, time_created INTEGER, time_updated INTEGER);" +
+		"INSERT INTO todo VALUES('s1','a','pending','low',0,1,1);" +
+		"INSERT INTO todo VALUES('s1','b','in_progress','low',1,1,1);" +
+		"INSERT INTO todo VALUES('s1','c','completed','low',2,1,1);" +
+		"INSERT INTO todo VALUES('s2','d','pending','low',0,1,1);" +
+		"INSERT INTO todo VALUES('s3','e','cancelled','low',0,1,1);" +
+		"INSERT INTO todo VALUES('s4','f','pending','low',0,1,1);"
+	if out, err := exec.Command("sqlite3", db, stmt).CombinedOutput(); err != nil {
+		t.Fatalf("seed: %v\n%s", err, out)
+	}
+	t.Setenv("EI_PROJECTS_OPENCODE_DB", db)
+
+	got := OpenCounts([]string{"s1", "s2", "s3", "missing"})
+	if got["s1"] != 2 || got["s2"] != 1 {
+		t.Fatalf("counts: %+v", got)
+	}
+	if _, ok := got["s3"]; ok {
+		t.Fatalf("a cancelled session is not open work: %+v", got)
+	}
+	// a session with no rows simply is not in the map -- the badge reads
+	// zero, and the scan never asks about a session it does not have
+	if _, ok := got["missing"]; ok {
+		t.Fatalf("unknown session: %+v", got)
+	}
+	// nothing to ask about is not worth a subprocess
+	if counts := OpenCounts(nil); counts != nil {
+		t.Fatalf("empty ids: %+v", counts)
+	}
+	// no todo table at all is a report without badges, not a broken cockpit
+	plain := filepath.Join(t.TempDir(), "plain.db")
+	if _, err := exec.Command("sqlite3", plain, "CREATE TABLE session(id TEXT);").CombinedOutput(); err != nil {
+		t.Skip("sqlite3 seed failed")
+	}
+	t.Setenv("EI_PROJECTS_OPENCODE_DB", plain)
+	if counts := OpenCounts([]string{"s1"}); counts != nil {
+		t.Fatalf("missing table must degrade quietly: %+v", counts)
+	}
+}
+
+// An id with a quote is still one literal, not a broken query.
+func TestOpenCountsQuotesIds(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("no sqlite3")
+	}
+	db := filepath.Join(t.TempDir(), "opencode.db")
+	stmt := "CREATE TABLE todo(session_id TEXT, content TEXT, status TEXT, position INTEGER, time_created INTEGER, time_updated INTEGER);" +
+		"INSERT INTO todo VALUES('it''s','x','pending',0,1,1);"
+	if out, err := exec.Command("sqlite3", db, stmt).CombinedOutput(); err != nil {
+		t.Fatalf("seed: %v\n%s", err, out)
+	}
+	t.Setenv("EI_PROJECTS_OPENCODE_DB", db)
+	if got := OpenCounts([]string{"it's"}); got["it's"] != 1 {
+		t.Fatalf("escaped id: %+v", got)
+	}
+}

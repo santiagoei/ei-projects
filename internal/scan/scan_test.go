@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/santiagoei/ei-projects/internal/agent"
 	"github.com/santiagoei/ei-projects/internal/config"
 )
 
@@ -49,6 +50,45 @@ func TestFeedNotes(t *testing.T) {
 		if strings.HasPrefix(n, "notes: ") {
 			t.Fatalf("a readable vault must not be a failure: %v", n)
 		}
+	}
+}
+
+// The badge on a session row is filled for the whole report in one query:
+// every session of every project gets its count, and a session listed under
+// two roots (a watch dir nested in another) is asked about once and appears
+// twice.
+func TestFillOpenTodos(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("no sqlite3")
+	}
+	db := filepath.Join(t.TempDir(), "opencode.db")
+	stmt := "CREATE TABLE todo(session_id TEXT, content TEXT, status TEXT, position INTEGER, time_created INTEGER, time_updated INTEGER);" +
+		"INSERT INTO todo VALUES('s1','a','pending',0,1,1);" +
+		"INSERT INTO todo VALUES('s1','b','in_progress',1,1,1);" +
+		"INSERT INTO todo VALUES('s1','c','completed',2,1,1);" +
+		"INSERT INTO todo VALUES('s2','d','pending',0,1,1);"
+	if out, err := exec.Command("sqlite3", db, stmt).CombinedOutput(); err != nil {
+		t.Fatalf("seed: %v\n%s", err, out)
+	}
+	t.Setenv("EI_PROJECTS_OPENCODE_DB", db)
+
+	projects := []Project{
+		{Sessions: []agent.Session{{ID: "s1"}, {ID: "s2"}}},
+		{Sessions: []agent.Session{{ID: "s1"}}}, // the nested watch dir repeats it
+		{Sessions: []agent.Session{{ID: "s3"}}},
+	}
+	fillOpenTodos(projects)
+	if got := projects[0].Sessions[0].OpenTodos; got != 2 {
+		t.Fatalf("s1 wants its two open items, got %d", got)
+	}
+	if got := projects[0].Sessions[1].OpenTodos; got != 1 {
+		t.Fatalf("s2: %d", got)
+	}
+	if got := projects[1].Sessions[0].OpenTodos; got != 2 {
+		t.Fatalf("the repeat lost its badge: %d", got)
+	}
+	if got := projects[2].Sessions[0].OpenTodos; got != 0 {
+		t.Fatalf("a session with no list must stay unbadged: %d", got)
 	}
 }
 

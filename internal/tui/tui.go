@@ -95,7 +95,6 @@ type Model struct {
 	commitsLoading bool
 	todos          []agent.Todo
 	todosFor       string
-	scope          sessionScope // what the SESSIONS pane is listing
 	envSvcs        []env.Service
 	envFor         string
 	envFetched     bool
@@ -1623,12 +1622,32 @@ func (m Model) paneSessions(g geom) string {
 	if repo, ok := m.selectedRepo(); ok {
 		scope = filepath.Base(repo.Path)
 	}
-	title := clip(fmt.Sprintf("SESSIONS · %s · %d", scope, len(list))+m.warn(paneSessions)+m.filterMark(paneSessions), inner)
+	open := 0
+	for _, s := range list {
+		open += s.OpenTodos
+	}
+	// the suffix is measured before the title is clipped: a title that
+	// overruns the pane soft-wraps, and a wrapped row inside a fixed-height
+	// frame pushes the top border off the screen
+	suffix := ""
+	if open > 0 {
+		suffix = orange(fmt.Sprintf(" · %d open", open))
+	}
+	title := clip(fmt.Sprintf("SESSIONS · %s · %d", scope, len(list))+
+		m.warn(paneSessions)+m.filterMark(paneSessions), inner-lipgloss.Width(suffix)) + suffix
 	var lines []string
 	for pos, it := range m.visible(paneSessions) {
 		s := list[it.idx]
+		// a session with unfinished items says so on its own row: the count is
+		// the reason to open it, and it has to be readable before the cursor
+		// lands, not after
+		badge := ""
+		if s.OpenTodos > 0 {
+			badge = orange(fmt.Sprintf(" ▸%d", s.OpenTodos))
+		}
 		meta := dim(padL(shortAge(s.Updated), 5) + " " + padL(fmt.Sprintf("$%.2f", s.Cost), 6))
-		line := padR(clip(s.Title, inner-lipgloss.Width(meta)-2), inner-lipgloss.Width(meta)-2) + meta
+		free := max(1, inner-lipgloss.Width(meta)-lipgloss.Width(badge)-2)
+		line := padR(clip(s.Title, free), free) + badge + meta
 		lines = append(lines, m.fillRow(paneSessions, "> "+line, pos == m.cursors[paneSessions], inner))
 	}
 	if len(lines) == 0 {

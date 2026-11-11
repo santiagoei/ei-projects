@@ -45,7 +45,7 @@ func testReport() scan.Report {
 				{Path: "/p/y", Branch: "master"},
 			},
 			Sessions: []agent.Session{
-				{ID: "s1", Title: "Retomar pendientes en local_analytics", Directory: "/p/icampus.fei.org", Updated: now.Add(-2 * time.Hour), Cost: 1.234},
+				{ID: "s1", Title: "Retomar pendientes en local_analytics", Directory: "/p/icampus.fei.org", Updated: now.Add(-2 * time.Hour), Cost: 1.234, OpenTodos: 3},
 				{ID: "s2", Title: strings.Repeat("sesión larguísima ", 6), Directory: "/p/sub/dir", Updated: now.Add(-26 * time.Hour), Cost: 0.01},
 			},
 			Notes: []vault.Note{
@@ -286,6 +286,36 @@ func TestEnvPaneRefreshesAndShowsKeys(t *testing.T) {
 		services: []env.Service{{Name: "web", State: "exited"}}})
 	if m.envLoading || m.envSvcs[0].State != "exited" {
 		t.Fatalf("refresh result not applied: %+v", m.envSvcs)
+	}
+}
+
+// A session that left work behind says so before the cursor lands on it: the
+// badge is what decides WHICH session to resume, and the pane's title carries
+// the total so the user knows the count is about this list, not one row.
+func TestSessionBadgeShowsOpenTodos(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	m := New(&config.Config{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: testReport()})
+	m.selectProject(1) // s1 has three open items in the fixture, s2 none
+	body := m.paneSessions(m.geom())
+	if !strings.Contains(body, "▸3") {
+		t.Fatalf("the badge never reached the row:\n%s", body)
+	}
+	if strings.Contains(body, "▸0") {
+		t.Fatal("a session with nothing open is badged anyway")
+	}
+	if !strings.Contains(body, "3 open") {
+		t.Fatalf("the pane total is missing:\n%s", body)
+	}
+	// the rows still fit the pane they are painted in
+	for _, size := range []struct{ w, h int }{{150, 40}, {80, 24}, {60, 22}} {
+		sm := drive(t, New(&config.Config{}), tea.WindowSizeMsg{Width: size.w, Height: size.h})
+		sm = drive(t, sm, scanDoneMsg{report: testReport()})
+		sm.selectProject(1)
+		if n := strings.Count(sm.View(), "\n") + 1; n > size.h-1 {
+			t.Fatalf("%dx%d with badges: %d lines\n%s", size.w, size.h, n, sm.View())
+		}
 	}
 }
 

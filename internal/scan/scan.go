@@ -69,7 +69,37 @@ func Run(ctx context.Context, cfg *config.Config) Report {
 	wg.Wait()
 
 	report.Projects = projects
+	fillOpenTodos(projects)
 	return report
+}
+
+// fillOpenTodos decorates every session of the report with the number of
+// items it left unfinished: one query for the whole scan instead of one per
+// project, and silent when the todo table does not exist. The badge is what
+// tells a user WHICH session to resume, and it has to arrive with the list --
+// a count the user reads only after landing on the row answers the question
+// after the fact.
+func fillOpenTodos(projects []Project) {
+	var ids []string
+	seen := map[string]bool{}
+	for _, p := range projects {
+		for _, s := range p.Sessions {
+			if !seen[s.ID] {
+				seen[s.ID] = true
+				ids = append(ids, s.ID)
+			}
+		}
+	}
+	counts := agent.OpenCounts(ids)
+	if len(counts) == 0 {
+		return
+	}
+	for i := range projects {
+		for j := range projects[i].Sessions {
+			s := &projects[i].Sessions[j]
+			s.OpenTodos = counts[s.ID]
+		}
+	}
 }
 
 func scanOne(ctx context.Context, dir string, cfg *config.Config) Project {

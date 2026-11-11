@@ -181,3 +181,37 @@ func TestRefreshRefetchesTheSelectionsFeeds(t *testing.T) {
 		t.Fatal("a stale refetch reply was rendered")
 	}
 }
+
+// The refresh is a timer asking for the same work `r` asks for, so it must not
+// look like the cockpit is busy with itself: no spinner for the background tick,
+// and the spinner still there when the user pressed the key. A panel that stays
+// open for a few seconds cannot afford to spend them spinning.
+func TestBackgroundRefreshIsInvisible(t *testing.T) {
+	m := New(&config.Config{AutoRefresh: 90})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: testReport()})
+	// let the first history reply land: a cold cache legitimately spins, and the
+	// assertion below is about the tick, not about the pane still loading its
+	// own first rows
+	m = drive(t, m, commitsDoneMsg{repoPath: m.proj().Repos[0].Path,
+		commits: []gitx.Commit{{Hash: "abc", Subject: "one"}}})
+
+	m = drive(t, m, refreshTickMsg{})
+	if m.commitsLoading || m.loading {
+		t.Fatalf("the tick raised a flag the user can see: %+v", m)
+	}
+	if !m.refreshing {
+		t.Fatal("the tick should mark a refresh in flight")
+	}
+	if frame := m.spinner.View(); strings.Contains(m.statusLine(), frame) {
+		t.Fatalf("the background refresh spun in front of the user: %q", m.statusLine())
+	}
+	if !strings.Contains(m.breadcrumb(), "scanned") {
+		t.Fatal("the age of the scan is the only honest signal, and it is gone")
+	}
+
+	m.loading = true // what `r` does
+	if frame := m.spinner.View(); !strings.Contains(m.statusLine(), frame) {
+		t.Fatalf("an explicit rescan must still show it is working: %q", m.statusLine())
+	}
+}

@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
 	"github.com/santiagoei/ei-projects/internal/agent"
@@ -141,6 +142,58 @@ func TestMouseClickSelectsRow(t *testing.T) {
 	if m.focus != paneProjects || m.project != 2 {
 		t.Fatalf("click mapped wrong: focus=%d project=%d (rect %+v)", m.focus, m.project, r)
 	}
+}
+
+// The mouse map is written in SCREEN rows, and that is the only honest source
+// for it: View puts the breadcrumb on the first row and the frame under it, so a
+// rect starting at row 0 points one row above the box it describes -- every
+// click lands on the row below the name the pointer was on, and selecting a row
+// means aiming at the gap over it. The coordinate here is read out of the painted
+// frame, not out of the geometry, which is what let that bug survive a test suite
+// that computed its clicks from the same wrong rects.
+func TestClickLandsOnTheRowThatWasPainted(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	m := New(&config.Config{})
+	m = drive(t, m, tea.WindowSizeMsg{Width: 150, Height: 40})
+	m = drive(t, m, scanDoneMsg{report: testReport()})
+
+	clickRows := func(title string, pane paneFocus, label func(int) string) {
+		t.Helper()
+		view := strings.Split(m.View(), "\n")
+		r := m.geom().rects[pane]
+		if r.y < 1 {
+			t.Fatalf("%s: the frame does not start below the breadcrumb: %+v", title, r)
+		}
+		if head := ansi.Strip(view[r.y]); !strings.Contains(head, title) {
+			t.Fatalf("%s: rect %+v is not the title row: %q", title, r, head)
+		}
+		items := m.visible(pane)
+		if room := r.h - 2; room < len(items) {
+			items = items[:room] // only the rows the pane actually painted
+		}
+		if len(items) < 2 {
+			t.Fatalf("%s: nothing to click through: %+v", title, r)
+		}
+		for pos, it := range items {
+			y := r.y + 1 + pos
+			line, want := ansi.Strip(view[y]), label(it.idx)
+			if !strings.Contains(line, want) {
+				t.Fatalf("%s row %d is not %q: %q", title, y, want, line)
+			}
+			m = drive(t, m, tea.MouseMsg{Action: tea.MouseActionPress,
+				Button: tea.MouseButtonLeft, X: r.x + 3, Y: y})
+			if got := m.selectedIndex(pane); got != it.idx {
+				t.Fatalf("%s: the click on row %d (%q) selected %d, want %d",
+					title, y, want, got, it.idx)
+			}
+		}
+	}
+
+	clickRows("PROJECTS", paneProjects, func(i int) string { return m.report.Projects[i].Name })
+	m.selectProject(1) // the fixture's project with six repositories
+	clickRows("REPOSITORIES", paneRepos, func(i int) string {
+		return filepath.Base(m.proj().Repos[i].Path)
+	})
 }
 
 // The whole seat round-trips through the state file: the project/repo pair by
@@ -1192,9 +1245,15 @@ func TestProjectRowsAndActiveBorder(t *testing.T) {
 	m = drive(t, m, scanDoneMsg{report: rep})
 
 	body := m.paneProjects(m.geom())
-	// one glyph per repository, in the order they are listed
-	if !strings.Contains(body, "●↑✓●↑✓") {
-		t.Fatalf("the glyph run never landed:\n%s", body)
+	// one mark for the whole project, not one per repository: four of the six
+	// have something waiting, and that is what the row says
+	if !strings.Contains(body, "●4") {
+		t.Fatalf("the project badge is not the aggregate it promises:\n%s", body)
+	}
+	// the fence of glyphs is gone: six repositories used to print six marks and
+	// the interesting one got lost in the run
+	if strings.Contains(body, "●↑✓") || strings.Contains(body, "✓✓") {
+		t.Fatalf("the per-repository glyph run came back:\n%s", body)
 	}
 	if !strings.Contains(body, "missing") || !strings.Contains(body, "—") {
 		t.Fatalf("a missing or empty project lost its badge:\n%s", body)
@@ -1223,8 +1282,9 @@ func TestProjectRowsAndActiveBorder(t *testing.T) {
 		t.Fatal("a quiet pane marked itself active")
 	}
 
-	// a project with more repositories than the badge has columns says how
-	// many it could not show, and no row overruns the pane it lives in
+	// a project with more repositories than the badge has columns: the count is
+	// the aggregate, so forty of them still cost three columns and no row
+	// overruns the pane it lives in
 	wide := scan.Report{Projects: []scan.Project{{Name: "many", Path: "/m",
 		Repos: func() []gitx.Repo {
 			var rs []gitx.Repo
@@ -1245,8 +1305,10 @@ func TestProjectRowsAndActiveBorder(t *testing.T) {
 				t.Fatalf("%dx%d: a row is %d wide: %q", size.w, size.h, got, line)
 			}
 		}
-		if !strings.Contains(wm.paneProjects(wm.geom()), "+") {
-			t.Fatal("forty repositories and no remainder marker")
+		// fourteen of the forty have something waiting, and that is the whole
+		// row says: a run of forty glyphs said it worse
+		if got := wm.paneProjects(wm.geom()); !strings.Contains(got, "●14") {
+			t.Fatalf("forty repositories did not arrive as one count:\n%s", got)
 		}
 	}
 }
@@ -1286,12 +1348,14 @@ func TestDetailBlockUsesTheSpareRows(t *testing.T) {
 	if g.projH < listFloor || g.repoH < listFloor {
 		t.Fatalf("the left column starved: proj=%d repos=%d detail=%d", g.projH, g.repoH, g.detailH)
 	}
-	// El panel DETAIL ocupa al menos listFloor y hasta 30% del alto disponible
-	if g.detailH < listFloor {
-		t.Fatalf("el panel DETAIL debe ser al menos %d filas, pero es %d", listFloor, g.detailH)
+	// and it reads as a panel, not as a footnote stranded at the bottom of the
+	// column: a third of the body, whatever the content happens to need
+	if g.detailH < g.bodyH/3 {
+		t.Fatalf("the detail block is %d of %d rows, less than the third it wants",
+			g.detailH, g.bodyH)
 	}
 	if g.projH+g.repoH+g.detailH != g.bodyH {
-		t.Fatalf("la columna izquierda no suma: %d+%d+%d != %d", g.projH, g.repoH, g.detailH, g.bodyH)
+		t.Fatalf("the left column does not add up: %d+%d+%d != %d", g.projH, g.repoH, g.detailH, g.bodyH)
 	}
 	// no repository, no block
 	m2 := drive(t, New(&config.Config{}), tea.WindowSizeMsg{Width: 150, Height: 40})

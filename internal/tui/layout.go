@@ -9,6 +9,13 @@ package tui
 
 type rect struct{ x, y, w, h int }
 
+// frameTop is how many rows View paints above the frame: the breadcrumb line.
+// The rects are kept in SCREEN rows, because that is the space a mouse event
+// arrives in -- and a map that started at 0 while the frame started at 1 pointed
+// every click one row above the row it selected, so the pointer had to aim at
+// the gap over a name to land on it.
+const frameTop = 1
+
 func (r rect) contains(x, y int) bool {
 	return x >= r.x && x < r.x+r.w && y >= r.y && y < r.y+r.h
 }
@@ -90,13 +97,13 @@ func (m Model) geom() geom {
 
 	// The left column is projects, repositories, and -- when the window can
 	// afford a third box without taking the floors away from the other two --
-	// the detail block. It pays for itself out of the repositories' slack:
-	// a list of five needs six rows and the projects pane has rarely more.
+	// the detail block. It wants a third of the body so it reads as a panel and
+	// not as a footnote stranded at the bottom, but it never buys those rows
+	// from under the two lists: they keep their floors first.
 	detailWant := len(m.detailLines(g.leftW-4)) + 2
-	if detailWant >= listFloor && g.bodyH >= detailWant+2*listFloor {
-		g.projH = clamp(m.height*42/100, listFloor, g.bodyH-detailWant-listFloor)
-		// 30% del alto disponible para el panel DETAIL, pero no menos de listFloor
-		g.detailH = max(listFloor, max(detailWant, g.bodyH/3))
+	g.detailH = max(detailWant, g.bodyH/3)
+	if detailWant >= listFloor && g.bodyH >= g.detailH+2*listFloor {
+		g.projH = clamp(m.height*42/100, listFloor, g.bodyH-g.detailH-listFloor)
 		g.repoH = g.bodyH - g.projH - g.detailH
 	} else {
 		g.detailH = 0
@@ -155,9 +162,9 @@ func (m Model) geom() geom {
 		// the stack, painted in this order: projects, repositories, the
 		// launcher bar, the conditional ENV, then the three lists
 		g.rects = map[paneFocus]rect{}
-		y := g.projH + g.repoH + g.actionH
-		g.rects[paneProjects] = rect{0, 0, g.leftW, g.projH}
-		g.rects[paneRepos] = rect{0, g.projH, g.leftW, g.repoH}
+		y := frameTop + g.projH + g.repoH + g.actionH
+		g.rects[paneProjects] = rect{0, frameTop, g.leftW, g.projH}
+		g.rects[paneRepos] = rect{0, frameTop + g.projH, g.leftW, g.repoH}
 		if g.hasEnv {
 			g.rects[paneEnv] = rect{0, y, g.rightW, g.envH}
 			y += g.envH
@@ -168,11 +175,11 @@ func (m Model) geom() geom {
 		return g
 	}
 
-	y := g.actionH
+	y := frameTop + g.actionH
 	if g.hasEnv {
 		g.rects = map[paneFocus]rect{
-			paneProjects: {0, 0, g.leftW, g.projH},
-			paneRepos:    {0, g.projH, g.leftW, g.repoH},
+			paneProjects: {0, frameTop, g.leftW, g.projH},
+			paneRepos:    {0, frameTop + g.projH, g.leftW, g.repoH},
 			paneEnv:      {g.leftW, y, g.rightW, g.envH},
 			paneCommits:  {g.leftW, y + g.envH, g.rightW, g.commitsH},
 			paneSessions: {g.leftW, y + g.envH + g.commitsH, g.rightW, g.sessionsH},
@@ -181,8 +188,8 @@ func (m Model) geom() geom {
 		return g
 	}
 	g.rects = map[paneFocus]rect{
-		paneProjects: {0, 0, g.leftW, g.projH},
-		paneRepos:    {0, g.projH, g.leftW, g.repoH},
+		paneProjects: {0, frameTop, g.leftW, g.projH},
+		paneRepos:    {0, frameTop + g.projH, g.leftW, g.repoH},
 		paneCommits:  {g.leftW, y, g.rightW, g.commitsH},
 		paneSessions: {g.leftW, y + g.commitsH, g.rightW, g.sessionsH},
 		paneNotes:    {g.leftW, y + g.commitsH + g.sessionsH, g.rightW, g.notesH},

@@ -1750,14 +1750,14 @@ func (m Model) paneProjects(g geom) string {
 	w, h := g.leftW, g.projH
 	inner := w - 4
 	var lines []string
-	// the badge gets at least "missing" columns, so no row can ever overflow
-	// the pane it is painted in (the box grows instead of clipping, and a
-	// frame one column too wide loses its border)
-	badgeW := max(7, min(12, inner/3))
+	// "missing" is the widest badge, so the name gets every other column: the
+	// box may not grow past the pane it is painted in (a frame one column too
+	// wide loses its border)
+	const badgeW = 7
 	for pos, it := range m.visible(paneProjects) {
 		p := m.report.Projects[it.idx]
 		label := padR(fmt.Sprintf("%d %s", pos+1, clip(p.Name, inner-badgeW-3)), inner-badgeW) +
-			projectBadge(p, badgeW)
+			projectBadge(p)
 		lines = append(lines, m.fillRow(paneProjects, "> "+label, it.idx == m.project, inner))
 	}
 	if len(lines) == 0 {
@@ -1776,46 +1776,53 @@ func (m Model) paneProjects(g geom) string {
 		listWindow(lines, m.selectedIndex(paneProjects), h-2, inner))
 }
 
-// projectBadge is a whole project in a handful of columns: one glyph per
-// repository, so what everything is doing is readable without walking into
-// each. The run is capped and the remainder becomes "+n", because a project
-// with thirty repositories must not push its own name off the row.
-func projectBadge(p scan.Project, budget int) string {
+// projectBadge is a whole project in a handful of columns. It used to paint one
+// glyph per repository, which turned a name into a fence of icons and said less
+// the more repositories a project had: six clean repos printed six identical
+// ticks, and the interesting one got lost in the run. The repositories pane
+// lists them one by one with their real state anyway, so the project row only
+// has to answer "does anything here still need me", and how many.
+func projectBadge(p scan.Project) string {
 	switch {
 	case p.Missing:
 		return red("missing")
 	case len(p.Repos) == 0:
 		return dim("—")
 	}
-	if p.EnvFile != "" {
-		budget = max(1, budget-1) // a project with an environment is marked
-	}
-	shown := min(len(p.Repos), max(1, budget))
-	for shown > 1 && shown+suffixLen(len(p.Repos)-shown) > budget {
-		shown--
-	}
-	var out strings.Builder
-	for _, r := range p.Repos[:shown] {
+	broken, waiting := 0, 0
+	for _, r := range p.Repos {
 		switch {
 		case r.Error != "":
-			out.WriteString(red("✗"))
-		case r.Dirty:
-			out.WriteString(orange("●"))
-		case r.Ahead > 0:
-			out.WriteString(green("↑"))
-		case r.Behind > 0:
-			out.WriteString(cyan("↓"))
-		default:
-			out.WriteString(dim("✓"))
+			broken++ // not "clean": the state is unknown, which is its own problem
+		case r.Dirty || r.Ahead > 0 || r.Behind > 0:
+			waiting++
 		}
 	}
-	if rest := len(p.Repos) - shown; rest > 0 {
-		out.WriteString(dim(fmt.Sprintf("+%d", rest)))
+	var out strings.Builder
+	switch {
+	case broken+waiting == 0:
+		out.WriteString(dim("✓"))
+	default:
+		if broken > 0 {
+			out.WriteString(red(counted("✗", broken)))
+		}
+		if waiting > 0 {
+			out.WriteString(orange(counted("●", waiting)))
+		}
 	}
 	if p.EnvFile != "" {
 		out.WriteString(cyan("⎈"))
 	}
 	return out.String()
+}
+
+// counted is a glyph that carries a number only when there is more than one of
+// them: a single dirty repository does not need announcing as "1".
+func counted(glyph string, n int) string {
+	if n == 1 {
+		return glyph
+	}
+	return glyph + strconv.Itoa(n)
 }
 
 // baseName is the last path segment of an image reference: the part a person
@@ -1834,15 +1841,6 @@ func plural(n int, word string) string {
 		return "1 " + word
 	}
 	return fmt.Sprintf("%d %ss", n, word)
-}
-
-// suffixLen is the width of the "+n" that says how many rows the badge could
-// not show.
-func suffixLen(n int) int {
-	if n <= 0 {
-		return 0
-	}
-	return 1 + len(strconv.Itoa(n))
 }
 
 // ageCell is a timestamp that recedes when it is old. Everything being the
@@ -2355,9 +2353,15 @@ func (m Model) statusLine() string {
 		}
 	}
 	// only the spinner shares the status line: the timestamp it used to carry
-	// lives in the breadcrumb, and "? help" is in the legend
+	// lives in the breadcrumb, and "? help" is in the legend.
+	//
+	// A background re-scan is deliberately not in this list. It is the same
+	// work the user could ask for with `r`, asked for by a timer: spinning in
+	// front of a panel that stays open for a few seconds reads as the cockpit
+	// being busy with itself, and the rows it swaps were never the ones being
+	// pointed at. `r` still spins, because there the wait is the answer.
 	right := ""
-	if m.loading || m.refreshing || m.commitsLoading || (m.envLoading && !m.envFetched) {
+	if m.loading || m.commitsLoading || (m.envLoading && !m.envFetched) {
 		right = m.spinner.View()
 	}
 	pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
